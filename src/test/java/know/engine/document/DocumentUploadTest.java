@@ -4,79 +4,67 @@ import io.minio.BucketExistsArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import know.engine.document.constant.DocumentStatus;
+import know.engine.document.constant.IndexStatus;
 import know.engine.document.entity.Document;
 import know.engine.document.entity.DocumentUploadParam;
 import know.engine.document.entity.DocumentVersion;
-import know.engine.document.service.DocumentService;
+import know.engine.document.mapper.DocumentMapper;
 import know.engine.document.service.DocumentVersionService;
-import know.engine.document.service.FileProcessService;
-import know.engine.document.service.FileProcessServiceFactory;
 import know.engine.document.service.FileStorageService;
 import know.engine.document.service.impl.DocumentProcessServiceImpl;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class DocumentUploadTest {
-
     @Test
-    void uploadReturnsThePersistedConvertedDocument() throws Exception {
-        var documents = mock(DocumentService.class);
+    void uploadReturnsDraftVersionAndDoesNotPublish() throws Exception {
+        var documents = mock(DocumentMapper.class);
         var versions = mock(DocumentVersionService.class);
         var storage = mock(FileStorageService.class);
-        var factory = mock(FileProcessServiceFactory.class);
-        var processor = mock(FileProcessService.class);
-        var service = service(documents, versions, storage);
-        ReflectionTestUtils.setField(service, "fileProcessServiceFactory", factory);
+        var manager = mock(PlatformTransactionManager.class);
+        when(manager.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
+        var service = new DocumentProcessServiceImpl(documents, versions, null, storage, null, null,
+                new TransactionTemplate(manager), new com.fasterxml.jackson.databind.ObjectMapper());
 
-        var persisted = new Document();
-        persisted.setDocId(1L);
-        persisted.setCurrentVersionId(2L);
-        persisted.setStatus(DocumentStatus.CONVERTED);
-        var version = new DocumentVersion();
-        version.setVersionId(2L);
-        version.setStatus(DocumentStatus.CONVERTED);
-        when(documents.getById(1L)).thenReturn(persisted);
-        when(documents.updateById(any(Document.class))).thenReturn(true);
+        var doc = new Document();
+        doc.setDocId(1L);
+        when(documents.insert(any(Document.class))).thenAnswer(call -> {
+            ((Document) call.getArgument(0)).setDocId(1L);
+            return 1;
+        });
+        when(documents.lockLive(1L)).thenReturn(doc);
+        var storedVersion = new AtomicReference<DocumentVersion>();
         when(versions.save(any(DocumentVersion.class))).thenAnswer(call -> {
-            ((DocumentVersion) call.getArgument(0)).setVersionId(2L);
+            DocumentVersion v = call.getArgument(0);
+            v.setVersionId(2L);
+            storedVersion.set(v);
             return true;
         });
-        when(versions.getById(2L)).thenReturn(version);
+        when(versions.getById(2L)).thenAnswer(call -> storedVersion.get());
         when(versions.updateById(any(DocumentVersion.class))).thenReturn(true);
-        when(storage.uploadFile(any(), anyString())).thenReturn("http://s3/test.md");
-        when(factory.get(any())).thenReturn(processor);
-        when(processor.processDocument(any(), any(), anyString())).thenReturn("http://s3/converted/test.md");
 
-        var result = service.upload(param(), "learner");
+        var file = new MockMultipartFile("file", "test.md", "text/markdown",
+                "# Test".getBytes(StandardCharsets.UTF_8));
+        var result = service.upload(new DocumentUploadParam(file, "Test", "", "1.0.0"), "learner");
 
-        assertSame(persisted, result);
-        assertEquals(DocumentStatus.CONVERTED, result.getStatus());
-        assertEquals("http://s3/converted/test.md", version.getConvertedDocUrl());
-    }
-
-    @Test
-    void originalStorageFailureIsReportedAndItsDocumentIsRemoved() throws Exception {
-        var documents = mock(DocumentService.class);
-        var versions = mock(DocumentVersionService.class);
-        var storage = mock(FileStorageService.class);
-        var service = service(documents, versions, storage);
-        var failure = new IOException("storage unavailable");
-        when(storage.uploadFile(any(), anyString())).thenThrow(failure);
-
-        var thrown = assertThrows(IOException.class, () -> service.upload(param(), "learner"));
-
-        assertSame(failure, thrown.getCause());
-        verify(documents).removeDocumentWithSegments(1L);
-        verify(versions, never()).save(any(DocumentVersion.class));
+        assertEquals(2L, result.getVersionId());
+        assertEquals(DocumentStatus.UPLOADED, result.getBuildStatus());
+        assertEquals(IndexStatus.NONE, result.getIndexStatus());
+        assertEquals("documents/1/versions/2/source/test.md", result.getSourceObjectKey());
+        verify(storage).uploadFile(file, result.getSourceObjectKey());
+        verify(documents, never()).publish(anyLong(), anyLong());
     }
 
     @Test
@@ -94,23 +82,5 @@ class DocumentUploadTest {
         var args = ArgumentCaptor.forClass(PutObjectArgs.class);
         verify(minio).putObject(args.capture());
         assertEquals("application/octet-stream", args.getValue().contentType());
-    }
-
-    private static DocumentProcessServiceImpl service(DocumentService documents, DocumentVersionService versions,
-                                                       FileStorageService storage) {
-        var service = new DocumentProcessServiceImpl();
-        ReflectionTestUtils.setField(service, "documentService", documents);
-        ReflectionTestUtils.setField(service, "documentVersionService", versions);
-        ReflectionTestUtils.setField(service, "fileStorageService", storage);
-        when(documents.save(any(Document.class))).thenAnswer(call -> {
-            ((Document) call.getArgument(0)).setDocId(1L);
-            return true;
-        });
-        return service;
-    }
-
-    private static DocumentUploadParam param() {
-        var file = new MockMultipartFile("file", "test.md", "text/markdown", "# Test".getBytes(StandardCharsets.UTF_8));
-        return new DocumentUploadParam(file, "Test", "Test upload", "1.0.0");
     }
 }

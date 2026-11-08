@@ -74,7 +74,8 @@ spring:
 # MyBatis-Plus 配置
 mybatis-plus:
   configuration:
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 定时任务会频繁检查待处理版本，SQL 通过 DEBUG 日志按需查看。
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   mapper-locations: classpath*:/mapper/**/*.xml
 
 # 百炼 OpenAI 兼容接口，Key 由本地私有配置或环境变量注入。

@@ -1,24 +1,6 @@
 package know.engine.document.constant;
 
+/** 版本内容已经完成的阶段。构建失败会在版本记录上保存错误和重试时间。 */
 public enum DocumentStatus {
-    /**
-     * 上传完成
-     */
-    UPLOADED,
-    /**
-     * 转换中
-     */
-    CONVERTING,
-    /**
-     * 转换完成
-     */
-    CONVERTED,
-    /**
-     * 分块完成
-     */
-    CHUNKED,
-    /**
-     * 向量存储完成
-     */
-    VECTOR_STORED;
+    UPLOADING, UPLOADED, CONVERTED, CHUNKED
 }

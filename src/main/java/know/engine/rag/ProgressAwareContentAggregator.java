@@ -69,7 +69,7 @@ public class ProgressAwareContentAggregator implements ContentAggregator {
             // 文档维度的RAG引用信息，用于前端展示
             List<ChatMessage.RagReference> ragReferencesDocs = results.stream()
                     .collect(Collectors.toMap(
-                            content -> content.textSegment().metadata().getInteger(DOC_ID),
+                            content -> content.textSegment().metadata().getLong(DOC_ID),
                             content -> content,
                             (existing, replacement) -> existing
                     )).values().stream()

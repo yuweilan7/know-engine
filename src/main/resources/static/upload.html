@@ -285,6 +285,8 @@
         let pendingSplitFileName = '';
         let isTableSplitMode = false;
 
+        let uploadedVersionId = null;
+
         function getFileExtension(fileName) {
             if (!fileName) return '';
             const idx = fileName.lastIndexOf('.');
@@ -414,11 +416,11 @@
                     if (xhr.status === 200) {
                         const response = JSON.parse(xhr.responseText);
                         pendingSplitFileName = file.name;
+                        uploadedVersionId = response.versionId;
                         showResult('success', '上传成功！', `
                             <strong>文档ID：</strong>${response.docId}<br>
-                            <strong>文档标题：</strong>${response.docTitle}<br>
-                            <strong>版本ID：</strong>${response.currentVersionId ?? '-'}<br>
-                            <strong>状态：</strong>${response.status}
+                            <strong>版本ID：</strong>${response.versionId}<br>
+                            <strong>状态：</strong>已保存原文件，等待解析
                         `);
                         document.getElementById('documentId').value = response.docId;
                         showSplitPanel(true);
@@ -516,7 +518,7 @@
                 }
             }
 
-            const params = new URLSearchParams();
+            const params = new URLSearchParams({ versionId: uploadedVersionId });
             params.append('splitType', splitType);
             params.append('chunkSize', chunkSize);
             params.append('overlap', overlap);
@@ -533,11 +535,10 @@
                 });
 
                 if (response.ok) {
-                    const resultData = await response.json();
-                    showResult('success', '切片完成！', `
+                    showResult('success', '已提交构建', `
                         <strong>文档ID：</strong>${documentId}<br>
                         <strong>切片方式：</strong>${splitModeLabel}<br>
-                        <strong>切片数量：</strong>${resultData} 个片段
+                        构建完成后自动发布，可在文档管理中查看进度。
                     `);
                     showSplitPanel(false);
                     setTimeout(() => { window.location.href = '/document.html'; }, 1500);

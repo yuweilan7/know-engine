@@ -1,104 +1,73 @@
 package know.engine.document.job;
 
 import know.engine.document.constant.DocumentStatus;
-import know.engine.document.entity.Document;
+import know.engine.document.constant.IndexStatus;
 import know.engine.document.entity.DocumentVersion;
-import know.engine.document.service.*;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import know.engine.document.mapper.DocumentMapper;
+import know.engine.document.mapper.DocumentVersionMapper;
+import know.engine.document.mapper.SegmentMapper;
+import know.engine.document.service.DocumentProcessService;
+import know.engine.document.service.DocumentVersionService;
+import know.engine.document.service.FileStorageService;
+import know.engine.document.service.VectorStoreService;
+import know.engine.document.service.impl.DocumentProcessServiceImpl;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.List;
+import java.time.LocalDateTime;
 
-/**
- * 文档处理补偿任务
- * 事件驱动的文档处理链路（转换 → 分段 → 向量化）如果中途失败，
- * 由这里的定时任务扫表兜底重试，保障最终一致性。
- */
-@Slf4j
 @Component
+@RequiredArgsConstructor
+@Slf4j
 public class DocumentCompensationJob {
-
-    @Autowired
-    private DocumentService documentService;
-
-    @Autowired
-    private DocumentVersionService documentVersionService;
-
-    @Autowired
-    private DocumentProcessService documentProcessService;
-
-    @Autowired
-    private DocumentCleanupService documentCleanupService;
+    private final DocumentMapper documents;
+    private final DocumentVersionMapper versionMapper;
+    private final SegmentMapper segments;
+    private final DocumentVersionService versions;
+    private final DocumentProcessService process;
+    private final VectorStoreService vectorStore;
+    private final FileStorageService storage;
+    private final TransactionTemplate transaction;
 
     /**
-     * 向量化补偿任务
-     * 扫描 CHUNKED 状态但存在未向量化的 segment，重新触发向量化
+     * 唯一构建执行入口。请求只在版本表登记意图。
+     * fixedDelay 等本次扫描完成再开始下一次，进程重启后从已保存阶段恢复。
      */
-    @Scheduled(cron = "0 */5 * * * ?")
-    public void documentEmbeddingCompensation() {
-        log.info("========== 开始执行向量化补偿任务 ==========");
-        int successCount = 0;
-        int failCount = 0;
-
-        try {
-            // 查询 CHUNKED 状态的文档
-            LambdaQueryWrapper<DocumentVersion> docQueryWrapper = new LambdaQueryWrapper<>();
-            docQueryWrapper.eq(DocumentVersion::getStatus, DocumentStatus.CHUNKED);
-
-            List<DocumentVersion> documents = documentVersionService.list(docQueryWrapper);
-            log.info("发现 {} 个 CHUNKED 状态的文档", documents.size());
-
-            for (DocumentVersion documentVersion : documents) {
-                Document document = documentService.getById(documentVersion.getDocId());
-                if (!document.getCurrentVersionId().equals(documentVersion.getVersionId())) {
-                    log.warn("文档 {} 当前版本 {} 不匹配，跳过补偿", documentVersion.getDocId(), documentVersion.getVersion());
-                    continue;
-                }
-
-                try {
-                    // 执行向量化
-                    boolean success = documentProcessService.embedAndStore(documentVersion);
-
-                    if (success) {
-                        log.info("向量化补偿成功，documentId: {} , version: {}", documentVersion.getDocId(), documentVersion.getVersion());
-                        successCount++;
-                    } else {
-                        log.warn("向量化补偿失败，documentId: {} , version: {}", documentVersion.getDocId(), documentVersion.getVersion());
-                        failCount++;
-                    }
-                } catch (Exception e) {
-                    log.error("向量化补偿失败，documentId: {} , version: {}", documentVersion.getDocId(), documentVersion.getVersion(), e);
-                    failCount++;
-                }
-            }
-        } catch (Exception e) {
-            log.error("向量化补偿任务执行异常", e);
-        }
-
-        log.info("========== 向量化补偿任务完成，成功: {}，失败: {} ==========", successCount, failCount);
+    @Scheduled(fixedDelayString = "${know-engine.document.poll-ms:3000}")
+    public void processPendingVersions() {
+        versions.lambdaQuery()
+                .apply("EXISTS (SELECT 1 FROM knowledge_document d WHERE d.doc_id = knowledge_document_version.doc_id AND d.deleted = 0)")
+                .lt(DocumentVersion::getRetryCount, DocumentProcessServiceImpl.MAX_ATTEMPTS)
+                .and(q -> q.isNull(DocumentVersion::getNextRetryAt)
+                        .or().le(DocumentVersion::getNextRetryAt, LocalDateTime.now()))
+                .and(q -> q.eq(DocumentVersion::getBuildStatus, DocumentStatus.UPLOADED)
+                        .or(b -> b.eq(DocumentVersion::getBuildStatus, DocumentStatus.CONVERTED)
+                                .isNotNull(DocumentVersion::getSplitParam))
+                        .or(b -> b.eq(DocumentVersion::getBuildStatus, DocumentStatus.CHUNKED)
+                                .eq(DocumentVersion::getIndexStatus, IndexStatus.PENDING)))
+                .orderByAsc(DocumentVersion::getVersionId).last("LIMIT 8")
+                .list().forEach(v -> process.advanceVersion(v.getVersionId()));
     }
 
-    /**
-     * 扫描所有状态为 VECTOR_STORED 的文档，检查是否存在旧版本残留分段
-     */
-    @Scheduled(cron = "0 */10 * * * ?")
-    public void retryFailedCleanups() {
-        try {
-            List<Document> docsToCleanup = documentService.scanDocumentsNeedingCleanup();
-            if (docsToCleanup.isEmpty()) {
-                return;
+    /** 只清理已删除文档。未生效的正常版本仍可继续构建或回滚。 */
+    @Scheduled(fixedDelay = 30000)
+    public void cleanupDeletedDocuments() {
+        for (Long docId : documents.pendingCleanupIds()) {
+            try {
+                vectorStore.removeByDocId(docId);
+                storage.deletePrefix("documents/" + docId + "/");
+                transaction.executeWithoutResult(tx -> {
+                    segments.physicalDeleteByDocumentId(docId);
+                    versionMapper.physicalDeleteByDocId(docId);
+                    documents.markCleaned(docId);
+                });
+            } catch (Exception e) {
+                // 保留删除记录与待清理标记，下一次继续。
+                log.warn("删除文档的存储清理失败，稍后重试 docId={}", docId, e);
             }
-
-            log.info("定时任务发现 {} 个文档需要清理旧版本数据", docsToCleanup.size());
-
-            for (Document docInfo : docsToCleanup) {
-                documentCleanupService.cleanupOldVersionData(docInfo.getDocId(), docInfo.getCurrentVersionId());
-            }
-        } catch (Exception e) {
-            log.error("定时清理任务执行异常: {}", e.getMessage(), e);
         }
     }
 }

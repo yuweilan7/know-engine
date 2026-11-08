@@ -45,16 +45,17 @@ public class FileStorageService {
 
     // 上传文件
     public String uploadFile(MultipartFile file, String objectName) throws Exception {
-        createBucketIfNotExists(true);// 这里可根据你自己的情况改成false，如果改成false，需要在这个方法最后调一次getPresignedUrl
-        minioClient.putObject(PutObjectArgs.builder()
-                .bucket(bucketName)
-                .object(objectName)
-                .stream(file.getInputStream(), file.getSize(), -1)
-                .contentType(StringUtils.hasText(file.getContentType())
-                        ? file.getContentType() : MediaType.APPLICATION_OCTET_STREAM_VALUE)
-                .build());
-        return String.format("%s/%s/%s", endpoint, bucketName, objectName);
-
+        createBucketIfNotExists(true);
+        try (InputStream input = file.getInputStream()) {
+            minioClient.putObject(PutObjectArgs.builder()
+                    .bucket(bucketName)
+                    .object(objectName)
+                    .stream(input, file.getSize(), -1)
+                    .contentType(StringUtils.hasText(file.getContentType())
+                            ? file.getContentType() : MediaType.APPLICATION_OCTET_STREAM_VALUE)
+                    .build());
+        }
+        return objectUrl(objectName);
     }
 
     /**
@@ -71,8 +72,22 @@ public class FileStorageService {
                             .contentType(contentType)
                             .build()
             );
+        }
+        return objectUrl(objectName);
+    }
 
-            return String.format("%s/%s/%s", endpoint, bucketName, objectName);
+    public String objectUrl(String key) {
+        if (key == null) return null;
+        return endpoint + "/" + bucketName + "/" + org.springframework.web.util.UriUtils.encodePath(
+                key, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /** 只删除调用方指定的文档目录。旧版没有独立前缀的文件保留供核对。 */
+    public void deletePrefix(String prefix) throws Exception {
+        if (!minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build())) return;
+        for (var result : minioClient.listObjects(ListObjectsArgs.builder()
+                .bucket(bucketName).prefix(prefix).recursive(true).build())) {
+            deleteFile(result.get().objectName());
         }
     }
 

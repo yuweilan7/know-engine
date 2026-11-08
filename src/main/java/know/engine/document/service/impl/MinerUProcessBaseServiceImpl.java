@@ -2,11 +2,8 @@ package know.engine.document.service.impl;
 
 import know.engine.ai.constant.PromptResources;
 import know.engine.ai.prompt.PromptService;
-import know.engine.document.constant.DocumentStatus;
-import know.engine.document.entity.Document;
 import know.engine.document.service.FileProcessService;
 import know.engine.document.service.FileStorageService;
-import know.engine.document.service.DocumentService;
 import dev.langchain4j.data.message.ImageContent;
 import dev.langchain4j.data.message.TextContent;
 import dev.langchain4j.data.message.UserMessage;
@@ -23,7 +20,6 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.util.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.util.Assert;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -47,13 +43,8 @@ import java.util.zip.ZipInputStream;
 @Slf4j
 public abstract class MinerUProcessBaseServiceImpl implements FileProcessService {
 
-    private static final String CONVERTED_FILE_DIR = "converted/";
-
     @Autowired
     private FileStorageService fileStorageService;
-
-    @Autowired
-    private DocumentService documentService;
 
     @Autowired
     private PromptService promptService;
@@ -70,8 +61,8 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
     /**
      * 处理文档转换
      */
-    public String processDocument(Document document, InputStream inputStream, String originalFileName) {
-        return processDocumentToMarkdownFromZip(document, inputStream, originalFileName);
+    public String processDocument(InputStream inputStream, String originalFileName, String outputPrefix) {
+        return processDocumentToMarkdownFromZip(inputStream, originalFileName, outputPrefix);
     }
 
     /**
@@ -85,21 +76,16 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
      * 7. 保存 md 的 MinIO 地址到 convertedUrl
      * 8. 异步清理本地临时文件
      *
-     * @param document 文档对象
+     * @param outputPrefix 此版本本次解析的独立目录
      * @param originalFileName 原始上传文件名（含扩展名）
      */
-    public String processDocumentToMarkdownFromZip(Document document, InputStream inputStream, String originalFileName) {
-        log.info("开始处理文档转换为 ZIP，documentId: {}", document.getDocTitle());
-
-        // 更新状态为转换中
-        documentService.advanceDocumentAndVersionStatus(document.getDocId(), document.getCurrentVersionId(), DocumentStatus.CONVERTING);
-
+    private String processDocumentToMarkdownFromZip(InputStream inputStream, String originalFileName, String outputPrefix) {
         String zipFilePath = null;
         String extractDir = null;
 
         try {
             // MinerU 在 Windows 上无法用含中文/非法字符的 multipart 文件名落盘，改用 ASCII 安全名并保留真实扩展名
-            String safeUploadFileName = buildSafeUploadFileName(originalFileName, document.getDocTitle());
+            String safeUploadFileName = buildSafeUploadFileName(originalFileName, null);
 
             // 1. 调用文档解析获取 ZIP 格式响应
             byte[] zipBytes = parseDocumentToZip(safeUploadFileName, inputStream);
@@ -118,20 +104,9 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
             log.info("ZIP 文件已解压到: {}", extractDir);
 
             // 4. 上传解压后的 md 和图片到 MinIO，并处理 md 内容
-            String mdMinioUrl = processExtractedFiles(document, extractDir);
-
-            // 5. 更新文档状态为已转换
-            documentService.advanceDocumentAndVersionStatus(document.getDocId(), document.getCurrentVersionId(), DocumentStatus.CONVERTED);
-
-            log.info("文档 ZIP 转换完成，documentId: {}, mdUrl: {}", document.getDocTitle(), mdMinioUrl);
-            return mdMinioUrl;
+            return processExtractedFiles(outputPrefix, extractDir);
         } catch (Exception e) {
-            log.error("文档 ZIP 转换失败，documentId: {}", document.getDocTitle(), e);
-            // 转换失败，状态回滚为 UPLOADED
-            document.setStatus(DocumentStatus.UPLOADED);
-            boolean result = documentService.updateById(document);
-            Assert.isTrue(result, "文件UPLOADED状态更新失败");
-            throw new RuntimeException("文档 ZIP 转换失败: " + e.getMessage(), e);
+            throw new IllegalStateException("MinerU 转换失败", e);
         } finally {
             closeQuietly(inputStream);
             // 异步清理临时文件
@@ -171,7 +146,7 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
     /**
      * 处理解压后的文件：上传 md 和图片到 MinIO，替换图片地址，生成图片描述
      */
-    private String processExtractedFiles(Document document, String extractDir) throws Exception {
+    private String processExtractedFiles(String outputPrefix, String extractDir) throws Exception {
         Path extractPath = Paths.get(extractDir);
 
         // 查找所有的 md 文件和图片文件
@@ -201,7 +176,7 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
 
         // 上传图片到 MinIO，并建立本地文件名到 MinIO URL 的映射
         java.util.Map<String, String> imageUrlMap = new java.util.HashMap<>();
-        String baseObjectName = CONVERTED_FILE_DIR + document.getDocTitle() + "/";
+        String baseObjectName = outputPrefix;
 
         for (Path imagePath : imageFiles) {
             String imageName = imagePath.getFileName().toString();
@@ -220,11 +195,11 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
         String processedMdContent = processMarkdownImages(mdContent, imageUrlMap);
 
         // 上传处理后的 md 文件到 MinIO
-        String mdObjectName = baseObjectName + mdFile.getFileName().toString();
+        String mdObjectName = baseObjectName + "document.md";
         String mdUrl = fileStorageService.uploadFile(mdObjectName, processedMdContent.getBytes(StandardCharsets.UTF_8), "text/markdown");
         log.info("Markdown 文件已上传到 MinIO: {}", mdUrl);
 
-        return mdUrl;
+        return mdObjectName;
     }
 
     /**
@@ -451,4 +426,3 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
         }
     }
 }
-

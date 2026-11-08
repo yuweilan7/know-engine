@@ -35,6 +35,8 @@ public class MetadataKeyConstant {
      * 文件版本
      */
     public static final String VERSION = "version";
+    /** 版本表主键。两路 ES 查询按此字段限制生效版本。 */
+    public static final String VERSION_ID = "versionId";
 
     /**
      * 分类

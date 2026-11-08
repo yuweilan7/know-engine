@@ -26,7 +26,8 @@ public class ReferenceUtil {
 
     public static ChatMessage.RagReference getRagReference(Content content, RetrievalSource retrievalSource) {
         return ChatMessage.RagReference.builder()
-                .documentId(content.textSegment().metadata().getInteger(DOC_ID) + "")
+                .documentId(content.textSegment().metadata().getLong(DOC_ID) + "")
+                .versionId(String.valueOf(content.textSegment().metadata().getLong(VERSION_ID)))
                 .documentTitle(content.textSegment().metadata().getString(FILE_NAME))
                 .url(content.textSegment().metadata().getString(URL))
                 .chunkId(content.textSegment().metadata().getString(CHUNK_ID))

@@ -18,8 +18,6 @@ public interface DocumentVersionService extends IService<DocumentVersion> {
      */
     List<DocumentVersion> listByDocId(Long docId);
 
-
-    List<DocumentVersion> listByDocIdAndVersion(Long docId, String version);
     /**
      * 获取文档的最新版本号
      *
@@ -27,12 +25,4 @@ public interface DocumentVersionService extends IService<DocumentVersion> {
      * @return 最新版本号（如 "2.0.0"），无版本记录时返回 null
      */
     String getLatestVersion(Long docId);
-
-    /**
-     * 检查内容哈希是否已存在
-     *
-     * @param contentHash 内容哈希值
-     * @return 是否已存在
-     */
-    boolean existsByContentHash(String contentHash);
 }

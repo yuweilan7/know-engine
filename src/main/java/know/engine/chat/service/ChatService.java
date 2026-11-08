@@ -12,6 +12,13 @@ import know.engine.chat.constant.RetrievalSource;
 import know.engine.chat.entity.ChatParam;
 import know.engine.chat.memory.DatabaseChatMemoryStore;
 import know.engine.document.service.SegmentService;
+import know.engine.document.service.DocumentService;
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.rag.content.Content;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import know.engine.rag.*;
 import know.engine.rag.reranker.DashScopeScoringModel;
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
@@ -25,11 +32,7 @@ import dev.langchain4j.rag.content.injector.ContentInjector;
 import dev.langchain4j.rag.content.injector.DefaultContentInjector;
 import dev.langchain4j.rag.query.router.DefaultQueryRouter;
 import dev.langchain4j.service.AiServices;
-import dev.langchain4j.store.embedding.elasticsearch.ElasticsearchConfigurationFullText;
-import dev.langchain4j.store.embedding.elasticsearch.ElasticsearchConfigurationKnn;
-import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
-import org.elasticsearch.client.RestClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,7 +45,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.util.function.Consumer;
 
-import static know.engine.rag.config.ElasticSearchConfiguration.INDEX_NAME;
+import static know.engine.rag.constant.MetadataKeyConstant.*;
 
 @Service
 @Slf4j
@@ -78,7 +81,10 @@ public class ChatService {
     private SegmentService segmentService;
 
     @Autowired
-    private RestClient restClient;
+    private ElasticsearchClient elasticsearchClient;
+
+    @Autowired
+    private DocumentService documentService;
 
     @Autowired
     private PromptService promptService;
@@ -97,57 +103,6 @@ public class ChatService {
 
     @Value("${langchain4j.open-ai.streaming-chat-model.model-name}")
     private String commonChatModelName;
-
-    /**
-     * 固定配置的 KNN 向量检索器，启动时创建一次后复用
-     */
-    private KnowEngineElasticsearchContentRetriever embeddingContentRetriever;
-
-    /**
-     * 固定配置的全文检索器，启动时创建一次后复用
-     */
-    private KnowEngineElasticsearchContentRetriever fullTextContentRetriever;
-
-    @PostConstruct
-    public void init() {
-        // 底层检索器不持有请求级状态，启动时各创建一次供并发请求复用
-
-        // 嵌入内容(向量)检索器
-        embeddingContentRetriever = KnowEngineElasticsearchContentRetriever.builder()
-                // 使用 KNN 配置，通过查询向量召回语义相近的知识片段
-                .configuration(ElasticsearchConfigurationKnn.builder().build())
-                // 向量检索最多召回 5 个候选片段
-                .maxResults(10)
-                // 过滤相似度低于 0.5 的候选片段
-                .minScore(0.5)
-                // 将查询文本转换为向量，供 KNN 检索使用
-                .embeddingModel(openAiEmbeddingModel)
-                // 使用共享的 Elasticsearch REST 客户端执行检索
-                .restClient(restClient)
-                // 指定知识片段所在的 Elasticsearch 索引
-                .indexName(INDEX_NAME)
-                // 用于读取命中片段关联的父分段内容
-                .knowledgeSegmentService(segmentService)
-                // 创建可复用的向量检索器
-                .build();
-
-        // 全文(关键词)检索器
-        fullTextContentRetriever = KnowEngineElasticsearchContentRetriever.builder()
-                // 使用全文配置，通过 match 查询按关键词召回知识片段
-                .configuration(ElasticsearchConfigurationFullText.builder().build())
-                // 全文检索最多召回 5 个候选片段
-                .maxResults(10)
-                // 使用共享的 Elasticsearch REST 客户端执行检索
-                .restClient(restClient)
-                // 注入统一的嵌入模型；全文检索分支不会调用该模型
-                .embeddingModel(openAiEmbeddingModel)
-                // 用于读取命中片段关联的父分段内容
-                .knowledgeSegmentService(segmentService)
-                // 指定知识片段所在的 Elasticsearch 索引
-                .indexName(INDEX_NAME)
-                // 创建可复用的全文检索器
-                .build();
-    }
 
     /**
      * 统一流式对话入口
@@ -316,9 +271,14 @@ public class ChatService {
                 processCallback
         );
 
-        // 两路检索器并行召回，外层 ProgressAware 只负责发进度，真正查 ES 的是内部 KnowEngineElasticsearchContentRetriever
-        ProgressAwareContentRetriever embeddingRetriever = createEmbeddingRetriever(processCallback);
-        ProgressAwareContentRetriever fullTextRetriever = createFullTextRetriever(processCallback);
+        // 一轮问答读一次生效版本。全文和向量召回共享这一份范围，数据库失败时直接报错。
+        List<Long> scope = List.copyOf(documentService.activeVersionIds());
+        var embeddingRetriever = new ProgressAwareContentRetriever(
+                new KnowEngineElasticsearchContentRetriever(elasticsearchClient, openAiEmbeddingModel, scope, true),
+                processCallback, RetrievalSource.VECTOR);
+        var fullTextRetriever = new ProgressAwareContentRetriever(
+                new KnowEngineElasticsearchContentRetriever(elasticsearchClient, openAiEmbeddingModel, scope, false),
+                processCallback, RetrievalSource.KEYWORD);
 
         // assistantMessageId 用于把最终引用片段写回助手消息
         ContentAggregator contentAggregator = createContentAggregator(processCallback, chatParam.assistantMessageId());
@@ -364,25 +324,6 @@ public class ChatService {
     }
 
     /**
-     * 创建向量检索通道：KNN 召回后，用 ProgressAwareContentRetriever 包一层
-     * 真正检索发生在 RAG 管道执行时；包装类会在首次 retrieve 前通过 processCallback 发送
-     * {@code [PROGRESS]:正在检索知识库内容...}
-     */
-    private ProgressAwareContentRetriever createEmbeddingRetriever(Consumer<String> processCallback) {
-        // 装饰器包含本轮请求的回调和发送状态，因此仍需按请求创建
-        return new ProgressAwareContentRetriever(embeddingContentRetriever, processCallback, RetrievalSource.VECTOR);
-    }
-
-    /**
-     * 创建全文检索通道：match 查询召回后，同样用 ProgressAware 包装发进度
-     * 与向量通道共用同一进度文案；ProgressAware 内部用 AtomicBoolean 保证这条进度只发一次
-     */
-    private ProgressAwareContentRetriever createFullTextRetriever(Consumer<String> processCallback) {
-        // 装饰器包含本轮请求的回调和发送状态，因此仍需按请求创建
-        return new ProgressAwareContentRetriever(fullTextContentRetriever, processCallback, RetrievalSource.KEYWORD);
-    }
-
-    /**
      * 创建召回结果聚合器
      * 内层 KnowEngineReRankingContentAggregator：RRF 融合双路结果，再用 百炼重排、截断
      * 外层 ProgressAwareContentAggregator：聚合前后发进度，并把最终引用写回助手消息
@@ -391,19 +332,39 @@ public class ChatService {
         ContentAggregator reRankingAggregator = KnowEngineReRankingContentAggregator.builder()
                 // 百炼分数与本地 BGE 的分值范围不同，先按相对顺序选 Top 5。
                 .scoringModel(rerankModel)
-                // 最终最多保留 5 个片段注入提示词
-                .maxResults(5)
+                // 多保留几个候选，扩展父块时去重后仍可补足 5 条。
+                .maxResults(10)
                 // 当前查询改写器只生成一个 Query，因此选择 Map 中的第一个 Query
                 .querySelector(queryToContents -> queryToContents.keySet().iterator().next())
                 // 创建执行 RRF 融合和 百炼重排的聚合器
                 .build();
         // 装饰器包在重排器外面：先发“正在排序筛选”，聚合后再发“正在生成回答”，并持久化引用
         return new ProgressAwareContentAggregator(
-                reRankingAggregator,
+                candidates -> expandParents(reRankingAggregator.aggregate(candidates)),
                 processCallback,
                 assistantMessageId,
                 chatMessageService
         );
+    }
+
+    /** 先对子块融合、重排，之后再扩展上下文。引用保留命中的子块 ID。 */
+    private List<Content> expandParents(List<Content> ranked) {
+        List<Content> result = new ArrayList<>();
+        var seenParents = new HashSet<String>();
+        for (Content hit : ranked) {
+            var metadata = hit.textSegment().metadata();
+            String parentId = metadata.getString(PARENT_CHUNK_ID);
+            if (parentId != null) {
+                if (!seenParents.add(parentId)) continue;
+                String parent = segmentService.getParentText(metadata.getLong(DOC_ID), metadata.getLong(VERSION_ID), parentId);
+                if (parent != null && parent.length() <= 12000) {
+                    hit = Content.from(TextSegment.from(parent, metadata), hit.metadata());
+                }
+            }
+            result.add(hit);
+            if (result.size() == 5) break;
+        }
+        return result;
     }
 
     /**

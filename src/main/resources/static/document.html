@@ -122,12 +122,8 @@
                     <label>状态</label>
                     <select id="filterStatus">
                         <option value="">全部</option>
-                        <option value="INIT">初始状态</option>
-                        <option value="UPLOADED">上传完成</option>
-                        <option value="CONVERTING">转换中</option>
-                        <option value="CONVERTED">转换完成</option>
-                        <option value="CHUNKED">分块完成</option>
-                        <option value="VECTOR_STORED">向量存储完成</option>
+                        <option value="ACTIVE">已生效</option>
+                        <option value="DRAFT">未发布</option>
                     </select>
                 </div>
                 <button class="btn btn-primary" onclick="searchDocuments()">搜索</button>
@@ -169,7 +165,7 @@
     <div class="modal-overlay" id="editModal">
         <div class="modal">
             <div class="modal-header">
-                <h2 id="editModalTitle">新增文档</h2>
+                <h2 id="editModalTitle">编辑文档</h2>
                 <button class="modal-close" onclick="closeModal('editModal')">&times;</button>
             </div>
             <form id="editForm">
@@ -178,19 +174,6 @@
                 <div class="form-group">
                     <label>文档标题 *</label>
                     <input type="text" id="editTitle" required>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>状态</label>
-                        <select id="editStatus">
-                            <option value="INIT">初始状态</option>
-                            <option value="UPLOADED">上传完成</option>
-                            <option value="CONVERTING">转换中</option>
-                            <option value="CONVERTED">转换完成</option>
-                            <option value="CHUNKED">分块完成</option>
-                            <option value="VECTOR_STORED">向量存储完成</option>
-                        </select>
-                    </div>
                 </div>
                 <div class="form-group">
                     <label>文档描述</label>
@@ -223,31 +206,6 @@
             </div>
             <div class="segment-list" id="segmentList">
                 <div class="empty-state">加载中...</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 分段编辑弹窗 -->
-    <div class="modal-overlay" id="segmentEditModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>编辑分段</h2>
-                <button class="modal-close" onclick="closeModal('segmentEditModal')">&times;</button>
-            </div>
-            <form id="segmentEditForm">
-                <input type="hidden" id="segEditId">
-                <input type="hidden" id="segEditLockVersion" value="0">
-                <input type="hidden" id="segEditDocId">
-                <input type="hidden" id="segEditChunkId">
-                <input type="hidden" id="segEditChunkOrder">
-                <div class="form-group">
-                    <label>分段内容</label>
-                    <textarea id="segEditText" style="min-height:200px;"></textarea>
-                </div>
-            </form>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('segmentEditModal')">取消</button>
-                <button class="btn btn-primary" onclick="saveSegment()">保存</button>
             </div>
         </div>
     </div>
@@ -335,6 +293,7 @@
             </div>
             <form id="versionSplitForm">
                 <input type="hidden" id="versionSplitDocId">
+                <input type="hidden" id="versionSplitVersionId">
                 <div class="table-split-notice" id="versionTableSplitNotice">
                     <strong>表格文件固定处理：</strong>XLSX / CSV 会按「首行表头 + 逐行键值对」切分，每行生成一个分段。无需也不支持选择 LENGTH / TITLE 等切分方式。
                 </div>
@@ -404,7 +363,7 @@
         let docRecords = []; // 存储当前页文档数据，供 onclick 查找标题
         // 分段相关
         let segmentDocId = null;
-        let segmentVersionId = null; // 当前查看的版本ID（null 表示查全部版本）
+        let segmentVersionId = null; // 当前查看的版本ID（null 表示查看生效版本）
         let segmentCurrentPage = 1;
         let segmentPageSize = 10;
         let segmentTotalPages = 1;
@@ -432,14 +391,16 @@
             return div.innerHTML;
         }
 
-        // 状态枚举中文映射（参考 DocumentStatus / SegmentStatus）
+        // 状态枚举中文映射（参考 DocumentStatus / IndexStatus）
         const STATUS_MAP = {
-            'INIT': '初始状态',
-            'UPLOADED': '上传完成',
-            'CONVERTING': '转换中',
-            'CONVERTED': '转换完成',
-            'CHUNKED': '分块完成',
-            'VECTOR_STORED': '向量存储完成'
+            ACTIVE: '已生效',
+            DRAFT: '未发布',
+            UPLOADING: '待上传',
+            UPLOADED: '等待解析',
+            CONVERTED: '已解析',
+            CHUNKED: '已切片',
+            PENDING: '正在构建索引',
+            READY: '索引就绪'
         };
 
         function statusTag(status) {
@@ -487,7 +448,7 @@
                     <td class="checkbox-cell"><input type="checkbox" value="${doc.docId}" onchange="toggleSelect(${doc.docId})" ${selectedIds.has(doc.docId) ? 'checked' : ''}></td>
                     <td>${doc.docId}</td>
                     <td class="doc-title" title="${escapeHtml(doc.docTitle)}">${escapeHtml(doc.docTitle)}</td>
-                    <td>${statusTag(doc.status)}</td>
+                    <td>${statusTag(doc.activeVersionId ? 'ACTIVE' : 'DRAFT')}</td>
                     <td class="doc-desc" title="${escapeHtml(doc.description)}">${escapeHtml(doc.description || '-')}</td>
                     <td id="versionCell-${doc.docId}" style="min-width:90px;">
                         <span style="color:#999;font-size:13px;">加载中...</span>
@@ -508,7 +469,7 @@
             loadVersionInfoForTable(records);
         }
 
-        // 批量加载当前页文档的当前激活版本号（取 currentVersionId 对应的版本，而非最大版本）
+        // 分别显示已生效的修订和更新的草稿。
         async function loadVersionInfoForTable(records) {
             await Promise.all(records.map(async (doc) => {
                 try {
@@ -517,19 +478,13 @@
                         const versions = await res.json();
                         const cell = document.getElementById(`versionCell-${doc.docId}`);
                         if (!cell) return;
-                        if (versions.length > 0) {
-                            // 优先展示 currentVersionId 对应的版本号，找不到则降级展示第一条
-                            const currentVer = doc.currentVersionId
-                                ? versions.find(v => v.versionId === doc.currentVersionId)
-                                : null;
-                            const displayVersion = currentVer ? currentVer.version : versions[0].version;
-                            cell.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
-                                <span class="tag" style="background:#e3f2fd;color:#1565c0;">v${escapeHtml(displayVersion)}</span>
-                                <span class="tag" style="background:#f3e5f5;color:#7b1fa2;cursor:pointer;" onclick="viewVersions(${doc.docId})">历史版本</span>
-                            </div>`;
-                        } else {
-                            cell.innerHTML = `<span style="color:#999;font-size:13px;">-</span>`;
-                        }
+                        const active = versions.find(v => v.active)?.revision;
+                        const draft = versions.find(v => !v.active)?.revision;
+                        const activeLabel = active ? '生效 v' + escapeHtml(active.version) : '暂无生效版';
+                        const draftLabel = draft && (!active || draft.versionId > active.versionId)
+                            ? ' · v' + escapeHtml(draft.version) + ' ' + versionState(draft) : '';
+                        cell.innerHTML = '<button class="btn btn-xs btn-secondary" onclick="viewVersions(' + doc.docId + ')">'
+                            + activeLabel + draftLabel + '</button>';
                     }
                 } catch (e) { /* ignore */ }
             }));
@@ -571,77 +526,41 @@
         }
 
         // ===== 新增/编辑 =====
-        // 编辑模式下只读的字段（仅标题和描述可修改）
-        const READONLY_FIELDS = ['editStatus'];
-
         async function openEditModal(docId) {
-            document.getElementById('editForm').reset();
-            document.getElementById('editLockVersion').value = 0;
-            if (docId) {
-                document.getElementById('editModalTitle').textContent = '编辑文档';
-                // 编辑模式：禁用除标题和描述外的字段
-                READONLY_FIELDS.forEach(id => document.getElementById(id).disabled = true);
-                try {
-                    const res = await fetch(`/api/document/${docId}`);
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
-                    const doc = await res.json();
-                    document.getElementById('editDocId').value = doc.docId;
-                    document.getElementById('editLockVersion').value = doc.lockVersion || 0;
-                    document.getElementById('editTitle').value = doc.docTitle || '';
-                    document.getElementById('editStatus').value = doc.status || 'INIT';
-                    document.getElementById('editDesc').value = doc.description || '';
-                } catch (e) {
-                    showToast('加载文档详情失败: ' + e.message, 'error');
-                    return;
-                }
-            } else {
-                document.getElementById('editModalTitle').textContent = '新增文档';
-                // 新增模式：启用所有字段
-                READONLY_FIELDS.forEach(id => document.getElementById(id).disabled = false);
-                document.getElementById('editDocId').value = '';
-                document.getElementById('editStatus').value = 'INIT';
+            try {
+                const res = await fetch('/api/document/' + docId);
+                if (!res.ok) throw new Error(await res.text());
+                const doc = await res.json();
+                document.getElementById('editDocId').value = doc.docId;
+                document.getElementById('editLockVersion').value = doc.lockVersion;
+                document.getElementById('editTitle').value = doc.docTitle;
+                document.getElementById('editDesc').value = doc.description || '';
+                openModal('editModal');
+            } catch (error) {
+                showToast('加载文档失败：' + error.message, 'error');
             }
-            openModal('editModal');
         }
 
         async function saveDocument() {
-            const docId = document.getElementById('editDocId').value;
-            const isEdit = !!docId;
             const data = {
+                docId: Number(document.getElementById('editDocId').value),
+                lockVersion: Number(document.getElementById('editLockVersion').value),
                 docTitle: document.getElementById('editTitle').value.trim(),
-                description: document.getElementById('editDesc').value.trim(),
-                lockVersion: parseInt(document.getElementById('editLockVersion').value) || 0
+                description: document.getElementById('editDesc').value.trim()
             };
-            if (!data.docTitle) { showToast('请输入文档标题', 'error'); return; }
-
-            if (isEdit) {
-                // 编辑模式：只提交标题、描述和乐观锁
-                data.docId = parseInt(docId);
-            } else {
-                data.status = document.getElementById('editStatus').value;
-            }
-
             try {
                 const res = await fetch('/api/document', {
-                    method: isEdit ? 'PUT' : 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
                 });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const result = await res.json();
-                if (result) {
-                    showToast(isEdit ? '更新成功' : '新增成功');
-                    closeModal('editModal');
-                    loadDocuments();
-                } else {
-                    showToast('操作失败', 'error');
-                }
-            } catch (e) {
-                showToast('保存失败: ' + e.message, 'error');
+                if (!res.ok) throw new Error(await res.text());
+                closeModal('editModal');
+                loadDocuments();
+                showToast('更新成功');
+            } catch (error) {
+                showToast(error.message, 'error');
             }
         }
 
-        // ===== 删除 =====
         async function deleteDocument(docId) {
             if (!confirm('确认删除该文档？删除后将同时删除其下所有分段。')) return;
             try {
@@ -687,7 +606,7 @@
                     const versions = await res.json();
                     if (versions.length > 0) {
                         // 版本列表已按降序排序，取第一个为最新版本
-                        const latestVersion = versions[0].version;
+                        const latestVersion = versions[0].revision.version;
                         // 主版本号 +1 作为建议版本
                         const parts = latestVersion.split('.');
                         const nextMajor = parseInt(parts[0]) + 1;
@@ -736,55 +655,58 @@
             }
         }
 
+        function versionState(v) {
+            if (v.lastError) return v.nextRetryAt ? '失败，等待自动重试' : '处理失败';
+            if (v.indexStatus === 'READY') return '索引就绪';
+            if (v.indexStatus === 'PENDING') return '正在构建索引';
+            if (v.buildStatus === 'CONVERTED' && v.splitParam) return '等待切片';
+            return STATUS_MAP[v.buildStatus] || v.buildStatus;
+        }
+
+        let versionRows = [];
         async function viewVersions(docId) {
-            const doc = docRecords.find(d => d.docId === docId);
-            const docTitle = doc ? (doc.docTitle || '') : '';
-            const currentVersionId = doc ? doc.currentVersionId : null;
-            document.getElementById('versionListTitle').textContent = `- ${docTitle}`;
-            document.getElementById('versionListContent').innerHTML = '<div class="empty-state">加载中...</div>';
+            document.getElementById('versionListTitle').textContent = ' · 文档 #' + docId;
+            const list = document.getElementById('versionListContent');
+            list.textContent = '加载中…';
             openModal('versionListModal');
             try {
-                const res = await fetch(`/api/document/versions/${docId}`);
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const versions = await res.json();
-                if (!versions || versions.length === 0) {
-                    document.getElementById('versionListContent').innerHTML = '<div class="empty-state">暂无版本数据</div>';
-                    return;
-                }
-                const html = versions.map(v => {
-                    const isActive = currentVersionId && v.versionId === currentVersionId;
-                    const borderColor = isActive ? '#0d7a4f' : (v.version === '1.0.0' ? '#1a4b8c' : '#adb5bd');
-                    const activeBadge = isActive ? '<span class="tag" style="background:#28a745;color:#fff;">当前版本</span>' : '';
-                    const switchBtn = isActive
-                        ? ''
-                        : `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="switchVersion(${docId}, ${v.versionId})">切换到此版本</button>`;
-                    const changelogHtml = v.changelog ? `<div style="padding:4px 12px;font-size:13px;color:#666;">变更说明：${escapeHtml(v.changelog)}</div>` : '';
-                    return `
-                    <div class="segment-item" style="border-left: 4px solid ${borderColor};">
-                        <div class="segment-item-header">
-                            <div class="segment-item-meta">
-                                <span class="tag" style="background:#e3f2fd;color:#1565c0;">v${v.version}</span>
-                                ${activeBadge}
-                                <span>${statusTag(v.status)}</span>
-                                <span>${escapeHtml(v.uploadUser || '-')}</span>
-                                <span>${formatTime(v.createdAt)}</span>
-                                ${switchBtn}
-                            </div>
-                            <div class="segment-actions">
-                                <button class="btn btn-sm btn-success" onclick="viewSegmentsFromVersion(${docId}, ${v.versionId}, 'v${v.version}')">查看分段</button>
-                            </div>
-                        </div>
-                        ${changelogHtml}
-                        <div style="padding:8px 12px;font-size:13px;color:#555;">
-                            ${escapeHtml(v.docUrl || '-')}
-                        </div>
-                    </div>
-                    `;
-                }).join('');
-                document.getElementById('versionListContent').innerHTML = html;
-            } catch (e) {
-                document.getElementById('versionListContent').innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`;
+                const res = await fetch('/api/document/versions/' + docId);
+                if (!res.ok) throw new Error(await res.text());
+                versionRows = await res.json();
+                list.innerHTML = versionRows.map(({revision: v, active, docUrl}, i) => {
+                    const retry = v.lastError && v.buildStatus !== 'UPLOADING'
+                        ? '<button class="btn btn-xs btn-primary" onclick="retryVersion(' + docId + ',' + v.versionId + ')">重试</button>' : '';
+                    const build = !v.splitParam && ['UPLOADED', 'CONVERTED'].includes(v.buildStatus)
+                        ? '<button class="btn btn-xs btn-primary" onclick="configureVersion(' + i + ')">设置切片</button>' : '';
+                    const publish = !active && v.indexStatus === 'READY'
+                        ? '<button class="btn btn-xs btn-primary" onclick="switchVersion(' + docId + ',' + v.versionId + ')">设为生效</button>' : '';
+                    const view = v.buildStatus === 'CHUNKED'
+                        ? '<button class="btn btn-xs btn-secondary" onclick="viewSegmentsFromVersion(' + docId + ',' + v.versionId + ')">查看分段</button>' : '';
+                    const download = docUrl && /^https?:\/\//.test(docUrl)
+                        ? '<a class="btn btn-xs btn-secondary" href="' + escapeHtml(docUrl).replaceAll('"', '&quot;') + '" target="_blank" rel="noopener">原文件</a>' : '';
+                    return '<div style="padding:12px;border-bottom:1px solid #ddd"><strong>v' + escapeHtml(v.version)
+                        + '</strong> · ' + (active ? '生效中' : escapeHtml(versionState(v)))
+                        + (v.changelog ? '<div>' + escapeHtml(v.changelog) + '</div>' : '')
+                        + (v.lastError ? '<div style="color:#b42318">' + escapeHtml(v.lastError) + '</div>' : '')
+                        + '<div style="display:flex;gap:8px;margin-top:8px">' + build + retry + publish + view + download + '</div></div>';
+                }).join('') || '暂无版本';
+                list.insertAdjacentHTML('afterbegin', '<button class="btn btn-xs btn-secondary" onclick="viewVersions(' + docId + ')">刷新进度</button>');
+            } catch (error) {
+                list.textContent = error.message;
             }
+        }
+
+        function configureVersion(i) {
+            const v = versionRows[i].revision;
+            closeModal('versionListModal');
+            openVersionSplitModal(v, v.sourceObjectKey || '');
+        }
+
+        async function retryVersion(docId, versionId) {
+            const res = await fetch('/api/document/versions/' + versionId + '/retry', { method: 'POST' });
+            if (!res.ok) { showToast(await res.text(), 'error'); return; }
+            showToast('已提交重试');
+            viewVersions(docId);
         }
 
         async function switchVersion(docId, versionId) {
@@ -812,7 +734,7 @@
             const doc = docRecords.find(d => d.docId === docId);
             const docTitle = doc ? (doc.docTitle || '') : '';
             segmentDocId = docId;
-            segmentVersionId = doc ? (doc.currentVersionId || null) : null;
+            segmentVersionId = doc ? (doc.activeVersionId || null) : null;
             segmentCurrentPage = 1;
             document.getElementById('segmentDocTitle').textContent = `- ${docTitle}`;
             openModal('segmentModal');
@@ -826,7 +748,7 @@
          * @param {number} versionId    版本ID
          * @param {string} versionLabel 版本显示标签（如 "v2.0.0"）
          */
-        async function viewSegmentsFromVersion(docId, versionId, versionLabel) {
+        async function viewSegmentsFromVersion(docId, versionId, versionLabel = '版本 #' + versionId) {
             segmentDocId = docId;
             segmentVersionId = versionId;
             segmentCurrentPage = 1;
@@ -840,7 +762,7 @@
             try {
                 const params = new URLSearchParams();
                 params.append('documentId', segmentDocId);
-                if (segmentVersionId != null) params.append('documentVersion', segmentVersionId);
+                if (segmentVersionId != null) params.append('versionId', segmentVersionId);
                 const res = await fetch(`/api/segment/count-by-document?${params}`);
                 if (res.ok) {
                     const count = await res.json();
@@ -852,7 +774,7 @@
         async function loadSegments() {
             const params = new URLSearchParams();
             params.append('documentId', segmentDocId);
-            if (segmentVersionId != null) params.append('documentVersion', segmentVersionId);
+            if (segmentVersionId != null) params.append('versionId', segmentVersionId);
             params.append('current', segmentCurrentPage);
             params.append('size', segmentPageSize);
             try {
@@ -882,15 +804,12 @@
                     <div class="segment-item-header">
                         <div class="segment-item-meta">
                             <span>#${seg.chunkOrder ?? seg.id}</span>
-                            ${seg.documentVersion ? `<span class="tag" style="background:#f3e5f5;color:#7b1fa2;">版本#${seg.documentVersion}</span>` : ''}
+                            ${seg.versionId ? `<span class="tag" style="background:#f3e5f5;color:#7b1fa2;">版本#${seg.versionId}</span>` : ''}
                             <span>${seg.embeddingId ? 'Embedding: ' + escapeHtml(seg.embeddingId) : ''}</span>
-                            <span>${statusTag(seg.status)}</span>
                             ${segTags.tagHtml}
                         </div>
                         <div class="segment-actions">
                             <button class="btn btn-sm btn-success" onclick="viewSegmentMeta(${seg.id})">Meta</button>
-                            <button class="btn btn-sm btn-secondary" onclick="editSegment(${seg.id})">编辑</button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteSegment(${seg.id})">删除</button>
                         </div>
                     </div>
                     <div class="segment-item-text" id="segText${seg.id}">${escapeHtml(seg.text)}</div>
@@ -945,72 +864,6 @@
         }
 
         // ===== 分段编辑 =====
-        async function editSegment(segId) {
-            try {
-                const res = await fetch(`/api/segment/${segId}`);
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const seg = await res.json();
-                // 父分段禁止直接编辑，提示用户修改子分段
-                if (seg.skipEmbedding === 1 || seg.skipEmbedding === '1') {
-                    showToast('父分段不支持直接编辑，请修改对应的子分段，父分段内容会自动同步', 'warning');
-                    return;
-                }
-                document.getElementById('segEditId').value = seg.id;
-                document.getElementById('segEditLockVersion').value = seg.lockVersion || 0;
-                document.getElementById('segEditDocId').value = seg.documentId || '';
-                document.getElementById('segEditChunkId').value = seg.chunkId || '';
-                document.getElementById('segEditChunkOrder').value = seg.chunkOrder || '';
-                document.getElementById('segEditText').value = seg.text || '';
-                openModal('segmentEditModal');
-            } catch (e) {
-                showToast('加载分段详情失败: ' + e.message, 'error');
-            }
-        }
-
-        async function saveSegment() {
-            const data = {
-                id: parseInt(document.getElementById('segEditId').value),
-                text: document.getElementById('segEditText').value,
-                documentId: parseInt(document.getElementById('segEditDocId').value) || null,
-                chunkId: document.getElementById('segEditChunkId').value || null,
-                chunkOrder: parseInt(document.getElementById('segEditChunkOrder').value) || null,
-                lockVersion: parseInt(document.getElementById('segEditLockVersion').value) || 0
-            };
-            try {
-                const res = await fetch('/api/segment', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const result = await res.json();
-                if (result) {
-                    showToast('分段更新成功');
-                    closeModal('segmentEditModal');
-                    loadSegments();
-                } else showToast('更新失败', 'error');
-            } catch (e) {
-                showToast('保存失败: ' + e.message, 'error');
-            }
-        }
-
-        async function deleteSegment(segId) {
-            if (!confirm('确认删除该分段？')) return;
-            try {
-                const res = await fetch(`/api/segment/${segId}`, { method: 'DELETE' });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const result = await res.json();
-                if (result) {
-                    showToast('删除成功');
-                    loadSegmentCount();
-                    loadSegments();
-                } else showToast('删除失败', 'error');
-            } catch (e) {
-                showToast('删除失败: ' + e.message, 'error');
-            }
-        }
-
-        // ===== 文档扩展信息 =====
         async function viewExtension(docId) {
             const doc = docRecords.find(d => d.docId === docId);
             const docTitle = doc ? (doc.docTitle || '') : '';
@@ -1091,9 +944,10 @@
         }
 
         function openVersionSplitModal(doc, uploadedFileName) {
+            document.getElementById('versionSplitForm').reset();
+            document.getElementById('versionSplitVersionId').value = doc.versionId;
             document.getElementById('versionSplitDocId').value = doc.docId;
             document.getElementById('versionSplitTitle').textContent = doc.docTitle ? `- ${doc.docTitle}` : '';
-            document.getElementById('versionSplitForm').reset();
             // 隐藏所有参数组
             ['versionSplitOverlapGroup', 'versionSplitTitleLevelGroup', 'versionSplitRegexGroup', 'versionSplitSeparatorGroup']
                 .forEach(id => document.getElementById(id).classList.remove('show'));
@@ -1150,6 +1004,7 @@
 
         async function submitVersionSplit() {
             const docId = document.getElementById('versionSplitDocId').value;
+            const versionId = document.getElementById('versionSplitVersionId').value;
             let splitType = document.getElementById('versionSplitType').value;
             let chunkSize = document.getElementById('versionSplitChunkSize').value;
             let overlap = document.getElementById('versionSplitOverlap').value || 0;
@@ -1169,7 +1024,7 @@
                 if (!chunkSize || chunkSize < 1) { showToast('请输入有效的最大分段长度', 'error'); return; }
             }
 
-            const params = new URLSearchParams();
+            const params = new URLSearchParams({ versionId });
             params.append('splitType', splitType);
             params.append('chunkSize', chunkSize);
             params.append('overlap', overlap);
@@ -1184,8 +1039,7 @@
             try {
                 const res = await fetch(`/api/document/split/${docId}?${params.toString()}`, { method: 'POST' });
                 if (res.ok) {
-                    const count = await res.json();
-                    showToast(`切片完成，共 ${count} 个片段`);
+                    showToast('已提交构建，完成后自动发布');
                     closeModal('versionSplitModal');
                     versionSplitIsTableMode = false;
                     loadDocuments();

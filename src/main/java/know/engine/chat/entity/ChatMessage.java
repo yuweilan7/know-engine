@@ -80,6 +80,9 @@ public class ChatMessage extends BaseEntity {
          */
         private String documentId;
 
+        /** 本次问答实际命中的版本记录 ID。早期聊天记录可能没有此字段。 */
+        private String versionId;
+
         /**
          * 文档URL
          */

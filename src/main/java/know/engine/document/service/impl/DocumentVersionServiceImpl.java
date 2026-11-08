@@ -35,13 +35,6 @@ public class DocumentVersionServiceImpl
     }
 
     @Override
-    public List<DocumentVersion> listByDocIdAndVersion(Long docId, String version) {
-        return list(new QueryWrapper<DocumentVersion>()
-                .eq("doc_id", docId)
-                .eq("version", version));
-    }
-
-    @Override
     public String getLatestVersion(Long docId) {
         List<DocumentVersion> versions = listByDocId(docId);
         if (versions.isEmpty()) {
@@ -49,12 +42,4 @@ public class DocumentVersionServiceImpl
         }
         return versions.get(0).getVersion();
     }
-
-    @Override
-    public boolean existsByContentHash(String contentHash) {
-        return count(new QueryWrapper<DocumentVersion>()
-                .eq("content_hash", contentHash)) > 0;
-    }
-
-
 }

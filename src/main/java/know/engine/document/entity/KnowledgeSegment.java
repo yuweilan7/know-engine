@@ -1,80 +1,32 @@
 package know.engine.document.entity;
 
-import know.engine.document.constant.SegmentStatus;
-import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import lombok.Data;
 import lombok.Getter;
 import lombok.Setter;
 
-import java.util.Map;
-
-/**
- * 知识片段表实体类
- */
+/** 某一版的分块。发布后编辑原文须重新上传，分块和向量一起更新。 */
 @Getter
 @Setter
 @TableName("knowledge_segment")
 public class KnowledgeSegment extends BaseEntity {
-
-    /**
-     * 片段ID
-     */
     @TableId(type = IdType.AUTO)
     private Long id;
-
-    /**
-     * 文本内容
-     */
     private String text;
 
-    /**
-     * 分片ID
-     */
+    /** 分块的稳定标识，同时作为 ES 文档 _id。索引重试时复用。 */
     private String chunkId;
 
-    /**
-     * 元数据
-     */
+    /** 标题层级、页码等扩展信息。归属和父子关系以普通列为准。 */
     private String metadata;
-
-    /**
-     * 所属文档ID
-     */
     private Long documentId;
 
-    /**
-     * 所属文档版本ID（指向 knowledge_document_version.version_id）
-     */
-    private Long documentVersion;
-
-    /**
-     * 顺序
-     */
+    /** 版本表主键，例如 101；界面版本号可能是 2.0.0。 */
+    private Long versionId;
+    private String parentChunkId;
     private Integer chunkOrder;
 
-    /**
-     * 嵌入ID
-     */
-    private String embeddingId;
-
-    /**
-     * 状态：INIT, VECTOR_STORED
-     */
-    private SegmentStatus status;
-
-    /**
-     * 是否跳过嵌入生成
-     */
+    /** 1 表示父块只存 MySQL，召回子块后再取出作为上下文。 */
     private Integer skipEmbedding;
-
-    @JsonIgnore
-    public Map<String, String> getMetadataMap() {
-        return metadata == null ? null : JSON.parseObject(metadata, Map.class);
-    }
 }
-
-
