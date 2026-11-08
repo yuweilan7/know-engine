@@ -1,0 +1,2 @@
+{"id": "aurora-md-001","question": "曙光智造园区的内部代号是什么？","groundTruthAnswer": "曙光智造园区的内部代号是 Aurora-7。","groundTruthChunkIds": ["353283299259580417"],"groundTruthDocumentIds": ["1"]}
+{"id": "aurora-md-002","question": "园区包含哪些生产区？","groundTruthAnswer": "园区包含 A、B、C 三个生产区。","groundTruthChunkIds": ["353283299259580417"],"groundTruthDocumentIds": ["1"]}

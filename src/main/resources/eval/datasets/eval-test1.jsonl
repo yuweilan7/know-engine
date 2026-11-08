@@ -1,0 +1,5 @@
+{"id": "aurora-md-001","question": "曙光智造园区的内部代号是什么？","groundTruthAnswer": "曙光智造园区的内部代号是 Aurora-7。","groundTruthChunkIds": ["353283299259580417"],"groundTruthDocumentIds": ["1"]}
+{"id": "aurora-md-002","question": "园区包含哪些生产区？","groundTruthAnswer": "园区包含 A、B、C 三个生产区。","groundTruthChunkIds": ["353283299259580417"],"groundTruthDocumentIds": ["1"]}
+{"id": "aurora-md-003","question": "园区统一使用哪种边缘网关？","groundTruthAnswer": "园区统一使用 HG-220 边缘网关。","groundTruthChunkIds": ["353283299259580417","353283299259580420"],"groundTruthDocumentIds": ["1"]}
+{"id": "aurora-md-004","question": "园区正常温度范围是多少？","groundTruthAnswer": "园区正常温度范围是 18°C 至 26°C。","groundTruthChunkIds": ["353283299259580418"],"groundTruthDocumentIds": ["1"]}
+{"id": "aurora-md-005","question": "园区正常相对湿度范围是多少？","groundTruthAnswer": "园区正常相对湿度范围是 35% 至 65%。","groundTruthChunkIds": ["353283299259580418"],"groundTruthDocumentIds": ["1"]}

@@ -1,0 +1,7 @@
+.local/
+target/
+.idea/
+.vscode/
+*.iml
+# 原始导出含历史聊天和评测记录；仓库只保存建表结构。
+/src/main/resources/sql/know_engine.sql

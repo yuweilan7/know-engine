@@ -1,0 +1,121 @@
+server:
+  address: ${KNOW_ENGINE_BIND_ADDRESS:127.0.0.1}
+  port: 8009
+
+spring:
+  config:
+    import: optional:file:./.local/credentials.properties,optional:file:./.local/cloud.properties
+  application:
+    name: KnowEngine
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 100MB
+      max-request-size: 100MB
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    url: ${KNOW_ENGINE_JDBC_URL:jdbc:mysql://127.0.0.1:3306/know_engine?rewriteBatchedStatements=true}
+    username: ${KNOW_ENGINE_DB_USER:know_engine}
+    password: ${KNOW_ENGINE_DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    druid:
+      initial-size: 1
+      min-idle: 1
+      max-active: 6
+    max-wait: 60000
+    time-between-eviction-runs-millis: 60000
+    min-evictable-idle-time-millis: 300000
+    validation-query: SELECT 1
+    test-while-idle: true
+    test-on-borrow: false
+    test-on-return: false
+    pool-prepared-statements: true
+    max-pool-prepared-statement-per-connection-size: 20
+    filters: stat,wall
+    connection-properties: druid.stat.mergeSql=true;druid.stat.slowSqlMillis=5000
+    stat-view-servlet:
+      enabled: true
+      url-pattern: /druid/*
+      login-username: admin
+      login-password: admin
+  data:
+    redis:
+      host: ${KNOW_ENGINE_REDIS_HOST:127.0.0.1}
+      port: ${KNOW_ENGINE_REDIS_PORT:6379}
+      username: ${KNOW_ENGINE_REDIS_USERNAME:}
+      password: ${KNOW_ENGINE_REDIS_PASSWORD:}
+      ssl:
+        enabled: false
+  redis:
+    redisson:
+      config: |
+        singleServerConfig:
+          idleConnectionTimeout: 10000
+          connectTimeout: 10000
+          timeout: 3000
+          retryAttempts: 3
+          retryInterval: 1500
+          username: ${spring.data.redis.username}
+          password: ${spring.data.redis.password}
+          subscriptionsPerConnection: 5
+          clientName: null
+          address: "redis://${spring.data.redis.host}:${spring.data.redis.port}"
+          subscriptionConnectionMinimumIdleSize: 1
+          subscriptionConnectionPoolSize: 50
+          connectionMinimumIdleSize: 2
+          connectionPoolSize: 64
+          database: 0
+          dnsMonitoringInterval: 5000
+        threads: 16
+        nettyThreads: 32
+        codec: !<org.redisson.codec.JsonJacksonCodec> {}
+        transportMode: "NIO"
+
+# MyBatis-Plus 配置
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  mapper-locations: classpath*:/mapper/**/*.xml
+
+# 百炼 OpenAI 兼容接口，Key 由本地私有配置或环境变量注入。
+dashscope:
+  api-key: ${DASHSCOPE_API_KEY:}
+  base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+  rerank:
+    url: ${DASHSCOPE_RERANK_URL:https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank}
+    model-name: ${KNOW_ENGINE_RERANK_MODEL:qwen3.7-text-rerank}
+
+langchain4j:
+  open-ai:
+    chat-model:
+      api-key: ${dashscope.api-key}
+      model-name: ${KNOW_ENGINE_CHAT_MODEL:qwen3.8-flash}
+      base-url: ${dashscope.base-url}
+      log-requests: false
+      log-responses: false
+    streaming-chat-model:
+      api-key: ${dashscope.api-key}
+      model-name: ${KNOW_ENGINE_CHAT_MODEL:qwen3.8-flash}
+      base-url: ${dashscope.base-url}
+      log-requests: false
+      log-responses: false
+
+elasticsearch:
+  host: ${KNOW_ENGINE_ELASTICSEARCH_URL:http://127.0.0.1:9200}
+  base-url: ${dashscope.base-url}
+  model-name: text-embedding-v4
+  api-key: ${dashscope.api-key}
+  dimensions: 1536
+
+# 这里填写对象存储的 S3 API 地址。SeaweedFS 和 MinIO 共用这组配置。
+minio:
+  access-key: ${KNOW_ENGINE_S3_ACCESS_KEY:}
+  secret-key: ${KNOW_ENGINE_S3_SECRET_KEY:}
+  bucketName: know-engine
+  endpoint: ${KNOW_ENGINE_S3_ENDPOINT:http://127.0.0.1:9090}
+
+# 文件解析服务配置
+file:
+  parse:
+    api:
+      url: ${KNOW_ENGINE_MINERU_URL:http://127.0.0.1:8000}
