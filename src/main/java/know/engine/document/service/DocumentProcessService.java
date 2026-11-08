@@ -10,8 +10,8 @@ import java.io.IOException;
 
 public interface DocumentProcessService {
     DocumentVersion upload(DocumentUploadParam param, String uploadUser) throws IOException;
-    DocumentVersion uploadNewVersion(Long docId, String version, MultipartFile file, String uploadUser, String changelog)
-            throws IOException;
+    DocumentVersion uploadNewVersion(Long docId, String version, MultipartFile file, String uploadUser,
+                                     String changelog, DocumentSplitParam split) throws IOException;
     void requestBuild(long versionId, DocumentSplitParam params);
     void retry(long versionId);
     Document switchVersion(Long docId, Long versionId);

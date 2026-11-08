@@ -7,13 +7,8 @@
     <link rel="stylesheet" href="/common.css">
     <style>
         .upload-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 20px;
-            align-items: start;
-        }
-        .upload-grid.has-split {
-            grid-template-columns: 1fr 1fr;
+            max-width: 760px;
+            margin-inline: auto;
         }
         .file-drop {
             position: relative;
@@ -112,34 +107,6 @@
             font-size: var(--ke-font-base);
             line-height: 1.6;
         }
-        .split-form {
-            display: none;
-        }
-        .split-form.is-visible {
-            display: block;
-        }
-        .table-split-notice {
-            display: none;
-            margin-bottom: 16px;
-            padding: 12px 14px;
-            border-radius: var(--ke-radius-sm);
-            border: 1px solid #b7d4ef;
-            background: #eef6fc;
-            color: var(--ke-text-secondary);
-            font-size: var(--ke-font-base);
-            line-height: 1.6;
-        }
-        .table-split-notice.is-visible {
-            display: block;
-        }
-        .table-split-notice strong {
-            color: var(--ke-text);
-        }
-        @media (max-width: 900px) {
-            .upload-grid.has-split {
-                grid-template-columns: 1fr;
-            }
-        }
     </style>
 </head>
 <body>
@@ -164,7 +131,7 @@
                         <div class="form-group">
                             <label>选择文件 *</label>
                             <div class="file-drop" id="fileWrapper">
-                                <input type="file" id="file" name="file" required>
+                                <input type="file" id="file" name="file" accept=".pdf,.doc,.docx,.md,.txt,.csv,.xls,.xlsx" required>
                                 <div class="file-drop-icon">+</div>
                                 <div class="file-drop-text">点击或拖拽文件到此处</div>
                                 <div class="file-drop-name" id="fileName"></div>
@@ -181,7 +148,9 @@
                             <input type="text" id="description" name="description" placeholder="请输入文档描述" required>
                         </div>
 
-                        <button type="submit" class="btn btn-primary btn-block" id="uploadBtn">开始上传</button>
+                        <div id="splitOptions"></div>
+                        <p class="form-group param-hint">上传后自动处理，搜索索引通过核验后发布。</p>
+                        <button type="submit" class="btn btn-primary btn-block" id="uploadBtn">上传并处理</button>
                     </form>
 
                     <div class="progress-container" id="progressContainer">
@@ -197,74 +166,11 @@
                     </div>
                 </section>
 
-                <section class="panel split-form" id="splitForm">
-                    <h2 class="panel-title">文档切片设置</h2>
-                    <form id="splitConfigForm">
-                        <input type="hidden" id="documentId" name="documentId">
-
-                        <div class="table-split-notice" id="tableSplitNotice">
-                            <strong>表格文件固定处理：</strong>XLSX / CSV 会按「首行表头 + 逐行键值对」切分，每行生成一个分段。无需也不支持选择 LENGTH / TITLE 等切分方式。
-                        </div>
-
-                        <div id="splitParamsPanel">
-                            <div class="form-group">
-                                <label for="splitType">切片方式 *</label>
-                                <select id="splitType" name="splitType" required>
-                                    <option value="">请选择切片方式</option>
-                                    <option value="LENGTH">按长度切分 (LENGTH)</option>
-                                    <option value="TITLE">按标题切分 (TITLE)</option>
-                                    <option value="REGEX">按正则切分 (REGEX)</option>
-                                    <option value="SMART">智能切分 (SMART)</option>
-                                    <option value="SEPARATOR">按分隔符切分 (SEPARATOR)</option>
-                                </select>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="chunkSize">最大分段长度 *</label>
-                                <input type="number" id="chunkSize" name="chunkSize" placeholder="例如：500" min="1" required>
-                                <div class="param-hint">所有切分方式都需要此参数</div>
-                            </div>
-
-                            <div class="param-group" id="overlapGroup">
-                                <div class="form-group">
-                                    <label for="overlap">分段重叠长度</label>
-                                    <input type="number" id="overlap" name="overlap" placeholder="例如：50" min="0">
-                                    <div class="param-hint">按长度切分、按标题切分需要</div>
-                                </div>
-                            </div>
-
-                            <div class="param-group" id="titleLevelGroup">
-                                <div class="form-group">
-                                    <label for="titleLevel">标题级数</label>
-                                    <input type="number" id="titleLevel" name="titleLevel" placeholder="例如：3" min="1" max="6">
-                                    <div class="param-hint">按标题切分需要，范围 1-6</div>
-                                </div>
-                            </div>
-
-                            <div class="param-group" id="regexGroup">
-                                <div class="form-group">
-                                    <label for="regex">正则表达式</label>
-                                    <input type="text" id="regex" name="regex" placeholder="例如：\n\n+">
-                                    <div class="param-hint">按正则切分需要</div>
-                                </div>
-                            </div>
-
-                            <div class="param-group" id="separatorGroup">
-                                <div class="form-group">
-                                    <label for="separator">分隔符</label>
-                                    <input type="text" id="separator" name="separator" placeholder="例如：\n\n">
-                                    <div class="param-hint">按分隔符切分需要</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <button type="submit" class="btn btn-success btn-block" id="splitBtn">开始切片</button>
-                    </form>
-                </section>
             </div>
         </main>
     </div>
 
+    <script src="/document-build.js"></script>
     <script>
         const fileInput = document.getElementById('file');
         const fileName = document.getElementById('fileName');
@@ -277,281 +183,99 @@
         const result = document.getElementById('result');
         const resultTitle = document.getElementById('resultTitle');
         const resultContent = document.getElementById('resultContent');
-        const uploadGrid = document.getElementById('uploadGrid');
-        const splitFormEl = document.getElementById('splitForm');
-        const tableSplitNotice = document.getElementById('tableSplitNotice');
-        const splitParamsPanel = document.getElementById('splitParamsPanel');
-        const TABLE_SPLIT_DEFAULTS = { splitType: 'LENGTH', chunkSize: '500', overlap: '0' };
-        let pendingSplitFileName = '';
-        let isTableSplitMode = false;
+        const splitOptions = mountSplitOptions(document.getElementById('splitOptions'), fileInput);
+        let trackingId = 0;
 
-        let uploadedVersionId = null;
-
-        function getFileExtension(fileName) {
-            if (!fileName) return '';
-            const idx = fileName.lastIndexOf('.');
-            return idx >= 0 ? fileName.substring(idx + 1).toLowerCase() : '';
-        }
-
-        function isTableFile(fileName) {
-            const ext = getFileExtension(fileName);
-            return ext === 'xlsx' || ext === 'xls' || ext === 'csv';
-        }
-
-        function applySplitUiMode(fileName) {
-            isTableSplitMode = isTableFile(fileName);
-            tableSplitNotice.classList.toggle('is-visible', isTableSplitMode);
-            splitParamsPanel.style.display = isTableSplitMode ? 'none' : 'block';
-
-            const splitTypeEl = document.getElementById('splitType');
-            const chunkSizeEl = document.getElementById('chunkSize');
-            if (isTableSplitMode) {
-                splitTypeEl.value = TABLE_SPLIT_DEFAULTS.splitType;
-                chunkSizeEl.value = TABLE_SPLIT_DEFAULTS.chunkSize;
-                document.getElementById('overlap').value = TABLE_SPLIT_DEFAULTS.overlap;
-                document.getElementById('titleLevel').value = '';
-                document.getElementById('regex').value = '';
-                document.getElementById('separator').value = '';
-                updateParamVisibility();
-            }
-        }
-
-        function showSplitPanel(visible) {
-            splitFormEl.classList.toggle('is-visible', visible);
-            uploadGrid.classList.toggle('has-split', visible);
-            splitFormEl.style.display = visible ? 'block' : 'none';
-            if (visible) {
-                applySplitUiMode(pendingSplitFileName);
-            } else {
-                isTableSplitMode = false;
-                pendingSplitFileName = '';
-                tableSplitNotice.classList.remove('is-visible');
-                splitParamsPanel.style.display = 'block';
-            }
-        }
-
-        fileInput.addEventListener('change', function() {
-            if (this.files && this.files[0]) {
-                const file = this.files[0];
-                const fullName = file.name;
-                fileName.textContent = fullName;
-                const lastDotIdx = fullName.lastIndexOf('.');
-                const baseName = lastDotIdx > 0 ? fullName.substring(0, lastDotIdx) : fullName;
-                const titleInput = document.getElementById('title');
-                const descInput = document.getElementById('description');
-                if (!titleInput.value.trim()) {
-                    titleInput.value = baseName;
-                }
-                if (!descInput.value.trim()) {
-                    descInput.value = baseName;
-                }
+        fileInput.addEventListener('change', () => {
+            const name = fileInput.files[0]?.name || '';
+            fileName.textContent = name;
+            const baseName = name.replace(/\.[^.]+$/, '');
+            for (const id of ['title', 'description']) {
+                const input = document.getElementById(id);
+                if (!input.value.trim()) input.value = baseName;
             }
         });
-
-        fileWrapper.addEventListener('dragover', (e) => {
-            e.preventDefault();
+        fileWrapper.addEventListener('dragover', event => {
+            event.preventDefault();
             fileWrapper.classList.add('is-dragover');
         });
-
-        fileWrapper.addEventListener('dragleave', () => {
+        fileWrapper.addEventListener('dragleave', () => fileWrapper.classList.remove('is-dragover'));
+        fileWrapper.addEventListener('drop', event => {
+            event.preventDefault();
             fileWrapper.classList.remove('is-dragover');
+            if (event.dataTransfer.files.length !== 1) return;
+            fileInput.files = event.dataTransfer.files;
+            fileInput.dispatchEvent(new Event('change'));
         });
 
-        fileWrapper.addEventListener('drop', (e) => {
-            e.preventDefault();
-            fileWrapper.classList.remove('is-dragover');
-
-            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                fileInput.files = e.dataTransfer.files;
-                const fullName = e.dataTransfer.files[0].name;
-                fileName.textContent = fullName;
-                const lastDotIdx = fullName.lastIndexOf('.');
-                const baseName = lastDotIdx > 0 ? fullName.substring(0, lastDotIdx) : fullName;
-                const titleInput = document.getElementById('title');
-                const descInput = document.getElementById('description');
-                if (!titleInput.value.trim()) {
-                    titleInput.value = baseName;
-                }
-                if (!descInput.value.trim()) {
-                    descInput.value = baseName;
-                }
-            }
-        });
-
-        uploadForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-
-            const file = fileInput.files[0];
-            if (!file) {
-                showResult('error', '请选择要上传的文件');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('title', document.getElementById('title').value);
-            formData.append('description', document.getElementById('description').value);
-
-            result.className = 'result';
-            progressContainer.style.display = 'block';
-            uploadBtn.disabled = true;
-            uploadBtn.textContent = '上传中...';
-
-            try {
-                const xhr = new XMLHttpRequest();
-
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                        const percent = Math.round((e.loaded / e.total) * 100);
-                        progressFill.style.width = percent + '%';
-                        progressText.textContent = percent + '%';
-                    }
-                });
-
-                xhr.addEventListener('load', () => {
-                    progressContainer.style.display = 'none';
-                    uploadBtn.disabled = false;
-                    uploadBtn.textContent = '开始上传';
-
-                    if (xhr.status === 200) {
-                        const response = JSON.parse(xhr.responseText);
-                        pendingSplitFileName = file.name;
-                        uploadedVersionId = response.versionId;
-                        showResult('success', '上传成功！', `
-                            <strong>文档ID：</strong>${response.docId}<br>
-                            <strong>版本ID：</strong>${response.versionId}<br>
-                            <strong>状态：</strong>已保存原文件，等待解析
-                        `);
-                        document.getElementById('documentId').value = response.docId;
-                        showSplitPanel(true);
-                        uploadForm.reset();
-                        fileName.textContent = '';
-                    } else {
-                        let errorMsg = '服务器返回错误：' + xhr.status;
-                        try {
-                            const respText = xhr.responseText.trim();
-                            if (respText) errorMsg = respText;
-                        } catch (err) {}
-                        showResult('error', '上传失败', errorMsg);
-                    }
-                });
-
-                xhr.addEventListener('error', () => {
-                    progressContainer.style.display = 'none';
-                    uploadBtn.disabled = false;
-                    uploadBtn.textContent = '开始上传';
-                    showResult('error', '上传失败', '网络请求出错，请检查网络连接');
-                });
-
-                xhr.open('POST', '/api/document/upload');
-                xhr.send(formData);
-
-            } catch (error) {
-                progressContainer.style.display = 'none';
-                uploadBtn.disabled = false;
-                uploadBtn.textContent = '开始上传';
-                showResult('error', '上传失败', error.message);
-            }
-        });
-
-        function showResult(type, title, content = '') {
+        function showResult(type, title, detail, docId) {
             result.className = 'result ' + type;
             resultTitle.textContent = title;
-            resultContent.innerHTML = content;
-        }
-
-        const splitTypeSelect = document.getElementById('splitType');
-        const splitConfigForm = document.getElementById('splitConfigForm');
-        const splitBtn = document.getElementById('splitBtn');
-
-        function updateParamVisibility() {
-            const splitType = splitTypeSelect.value;
-            document.getElementById('overlapGroup').classList.remove('show');
-            document.getElementById('titleLevelGroup').classList.remove('show');
-            document.getElementById('regexGroup').classList.remove('show');
-            document.getElementById('separatorGroup').classList.remove('show');
-
-            if (splitType === 'LENGTH' || splitType === 'TITLE') {
-                document.getElementById('overlapGroup').classList.add('show');
-            }
-            if (splitType === 'TITLE') {
-                document.getElementById('titleLevelGroup').classList.add('show');
-            }
-            if (splitType === 'REGEX') {
-                document.getElementById('regexGroup').classList.add('show');
-            }
-            if (splitType === 'SEPARATOR') {
-                document.getElementById('separatorGroup').classList.add('show');
+            resultContent.textContent = detail;
+            if (docId) {
+                const link = document.createElement('a');
+                link.href = '/document.html?docId=' + encodeURIComponent(docId);
+                link.textContent = '查看版本';
+                resultContent.append(' · ', link);
             }
         }
 
-        splitTypeSelect.addEventListener('change', updateParamVisibility);
-
-        splitConfigForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-
-            const documentId = document.getElementById('documentId').value;
-            let splitType = document.getElementById('splitType').value;
-            let chunkSize = document.getElementById('chunkSize').value;
-            let overlap = document.getElementById('overlap').value || 0;
-            let titleLevel = document.getElementById('titleLevel').value || '';
-            let regex = document.getElementById('regex').value || '';
-            let separator = document.getElementById('separator').value || '';
-            let splitModeLabel = splitType;
-
-            if (isTableSplitMode) {
-                splitType = TABLE_SPLIT_DEFAULTS.splitType;
-                chunkSize = TABLE_SPLIT_DEFAULTS.chunkSize;
-                overlap = TABLE_SPLIT_DEFAULTS.overlap;
-                titleLevel = '';
-                regex = '';
-                separator = '';
-                splitModeLabel = '表格固定处理（逐行键值对）';
-            } else {
-                if (!splitType) {
-                    showResult('error', '请选择切片方式');
-                    return;
-                }
-                if (!chunkSize || chunkSize < 1) {
-                    showResult('error', '请输入有效的最大分段长度');
-                    return;
-                }
-            }
-
-            const params = new URLSearchParams({ versionId: uploadedVersionId });
-            params.append('splitType', splitType);
-            params.append('chunkSize', chunkSize);
-            params.append('overlap', overlap);
-            params.append('titleLevel', titleLevel);
-            params.append('regex', regex);
-            params.append('separator', separator);
-
-            splitBtn.disabled = true;
-            splitBtn.textContent = '切片中...';
-
+        async function trackBuild(docId, versionId, token) {
+            if (token !== trackingId) return;
             try {
-                const response = await fetch(`/api/document/split/${documentId}?${params.toString()}`, {
-                    method: 'POST'
-                });
-
-                if (response.ok) {
-                    showResult('success', '已提交构建', `
-                        <strong>文档ID：</strong>${documentId}<br>
-                        <strong>切片方式：</strong>${splitModeLabel}<br>
-                        构建完成后自动发布，可在文档管理中查看进度。
-                    `);
-                    showSplitPanel(false);
-                    setTimeout(() => { window.location.href = '/document.html'; }, 1500);
-                } else {
-                    const errorText = await response.text();
-                    showResult('error', '切片失败', errorText || '服务器返回错误：' + response.status);
-                }
+                const res = await fetch('/api/document/versions/' + docId);
+                if (!res.ok) throw new Error('无法读取处理进度');
+                const versions = await res.json();
+                if (token !== trackingId) return;
+                const view = versions.find(({revision}) => revision.versionId === versionId);
+                if (!view) throw new Error('版本已不存在');
+                const { revision: v, active } = view;
+                showResult(v.lastError ? 'error' : 'success', describeVersion(v, active),
+                    v.lastError || `文档 #${docId} · v${v.version}`, docId);
+                if (versionBuildPending(v, active)) setTimeout(() => trackBuild(docId, versionId, token), 3000);
             } catch (error) {
-                showResult('error', '切片失败', error.message);
-            } finally {
-                splitBtn.disabled = false;
-                splitBtn.textContent = '开始切片';
+                if (token === trackingId) showResult('error', error.message, '可在版本列表刷新进度。', docId);
             }
+        }
+
+        uploadForm.addEventListener('submit', event => {
+            event.preventDefault();
+            const token = ++trackingId;
+            const formData = new FormData(uploadForm);
+            result.className = 'result';
+            progressFill.style.width = '0%';
+            progressText.textContent = '0%';
+            progressContainer.style.display = 'block';
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = '上传中…';
+
+            const xhr = new XMLHttpRequest();
+            xhr.upload.addEventListener('progress', event => {
+                if (!event.lengthComputable) return;
+                const percent = Math.round(event.loaded / event.total * 100) + '%';
+                progressFill.style.width = percent;
+                progressText.textContent = percent === '100%' ? '文件已传送，正在保存…' : percent;
+            });
+            xhr.addEventListener('load', () => {
+                if (xhr.status < 200 || xhr.status >= 300) {
+                    showResult('error', '提交失败', xhr.responseText || `HTTP ${xhr.status}`);
+                    return;
+                }
+                const v = JSON.parse(xhr.responseText);
+                showResult('success', '已接收，正在后台处理', `文档 #${v.docId} · v${v.version}`, v.docId);
+                uploadForm.reset();
+                fileName.textContent = '';
+                splitOptions.update('');
+                trackBuild(v.docId, v.versionId, token);
+            });
+            xhr.addEventListener('error', () => showResult('error', '提交失败', '请检查连接。'));
+            xhr.addEventListener('loadend', () => {
+                progressContainer.style.display = 'none';
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = '上传并处理';
+            });
+            xhr.open('POST', '/api/document/upload');
+            xhr.send(formData);
         });
     </script>
 </body>

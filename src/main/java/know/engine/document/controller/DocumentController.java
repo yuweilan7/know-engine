@@ -29,20 +29,24 @@ public class DocumentController {
     private final FileStorageService storage;
 
     @PostMapping("/upload")
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public DocumentVersion upload(@RequestParam MultipartFile file, @RequestParam String title,
                                   @RequestParam(defaultValue = "1.0.0") String version,
                                   @RequestParam(defaultValue = "") String description,
-                                  @RequestParam(required = false) String uploadUser) throws IOException {
-        return process.upload(new DocumentUploadParam(file, title, description, version),
+                                  @RequestParam(required = false) String uploadUser,
+                                  @ModelAttribute DocumentSplitParam split) throws IOException {
+        return process.upload(new DocumentUploadParam(file, title, description, version, split),
                 DefaultUser.userNameOrDefault(uploadUser));
     }
 
     @PostMapping("/upload-version")
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public DocumentVersion uploadVersion(@RequestParam MultipartFile file, @RequestParam Long docId,
                                          @RequestParam String version,
                                          @RequestParam(required = false) String changelog,
-                                         @RequestParam(required = false) String uploadUser) throws IOException {
-        return process.uploadNewVersion(docId, version, file, DefaultUser.userNameOrDefault(uploadUser), changelog);
+                                         @RequestParam(required = false) String uploadUser,
+                                         @ModelAttribute DocumentSplitParam split) throws IOException {
+        return process.uploadNewVersion(docId, version, file, DefaultUser.userNameOrDefault(uploadUser), changelog, split);
     }
 
     @GetMapping("/versions/{docId}")
@@ -58,13 +62,10 @@ public class DocumentController {
 
     @PostMapping("/split/{docId}")
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public void split(@PathVariable Long docId, @RequestParam Long versionId, @RequestParam String splitType,
-                      @RequestParam Integer chunkSize, @RequestParam(required = false) Integer overlap,
-                      @RequestParam(required = false) String regex, @RequestParam(required = false) Integer titleLevel,
-                      @RequestParam(required = false) String separator) {
+    public void split(@PathVariable Long docId, @RequestParam Long versionId, @ModelAttribute DocumentSplitParam split) {
         DocumentVersion version = versions.getById(versionId);
         if (version == null || !docId.equals(version.getDocId())) throw new IllegalArgumentException("版本不属于该文档");
-        process.requestBuild(versionId, new DocumentSplitParam(splitType, chunkSize, overlap, titleLevel, separator, regex));
+        process.requestBuild(versionId, split);
     }
 
     @PostMapping("/versions/{versionId}/retry")

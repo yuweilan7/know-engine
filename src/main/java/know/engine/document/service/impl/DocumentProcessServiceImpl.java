@@ -10,6 +10,7 @@ import know.engine.document.constant.IndexStatus;
 import know.engine.document.entity.*;
 import know.engine.document.mapper.DocumentMapper;
 import know.engine.document.service.*;
+import know.engine.document.util.DocumentSplitPolicy;
 import know.engine.document.util.FileTypeUtil;
 import know.engine.document.util.VersionUtil;
 import know.engine.infra.snowflake.SnowflakeIdGenerator;
@@ -52,9 +53,10 @@ public class DocumentProcessServiceImpl implements DocumentProcessService {
     @Override
     public DocumentVersion upload(DocumentUploadParam param, String uploadUser) throws IOException {
         String filename = sourceName(param.file());
-        String hash = contentHash(param.file());
         checkVersionNumber(param.version());
         if (param.title() == null || param.title().isBlank()) throw new IllegalArgumentException("请输入文档标题");
+        String splitJson = splitJson(filename, param.split());
+        String hash = contentHash(param.file());
 
         DocumentVersion version = transaction.execute(tx -> {
             Document doc = new Document();
@@ -62,31 +64,33 @@ public class DocumentProcessServiceImpl implements DocumentProcessService {
             doc.setDescription(param.description());
             doc.setPublishRevision(0L);
             documents.insert(doc);
-            return createVersion(doc.getDocId(), param.version(), hash, uploadUser, null);
+            return createVersion(doc, param.version(), hash, uploadUser, null, splitJson);
         });
         return saveSource(version, param.file(), filename);
     }
 
     @Override
-    public DocumentVersion uploadNewVersion(Long docId, String number, MultipartFile file, String user, String changelog)
-            throws IOException {
+    public DocumentVersion uploadNewVersion(Long docId, String number, MultipartFile file, String user,
+                                            String changelog, DocumentSplitParam split) throws IOException {
         String filename = sourceName(file);
-        String hash = contentHash(file);
         checkVersionNumber(number);
+        String splitJson = splitJson(filename, split);
+        String hash = contentHash(file);
         DocumentVersion version = transaction.execute(tx -> {
-            lockDocument(docId);
+            Document doc = lockDocument(docId);
             String latest = versions.getLatestVersion(docId);
             if (latest != null && VersionUtil.compareVersions(number, latest) <= 0) {
                 throw new IllegalArgumentException("新版本号必须大于 " + latest);
             }
-            return createVersion(docId, number, hash, user, changelog);
+            return createVersion(doc, number, hash, user, changelog, splitJson);
         });
         return saveSource(version, file, filename);
     }
 
-    private DocumentVersion createVersion(long docId, String number, String hash, String user, String changelog) {
+    private DocumentVersion createVersion(Document doc, String number, String hash, String user, String changelog,
+                                          String splitJson) {
         DocumentVersion version = new DocumentVersion();
-        version.setDocId(docId);
+        version.setDocId(doc.getDocId());
         version.setVersion(number);
         version.setContentHash(hash);
         version.setUploadUser(user);
@@ -94,6 +98,8 @@ public class DocumentProcessServiceImpl implements DocumentProcessService {
         version.setBuildStatus(DocumentStatus.UPLOADING);
         version.setIndexStatus(IndexStatus.NONE);
         version.setRetryCount(0);
+        version.setSplitParam(splitJson);
+        version.setBasePublishRevision(doc.getPublishRevision());
         versions.save(version);
         return version;
     }
@@ -118,13 +124,6 @@ public class DocumentProcessServiceImpl implements DocumentProcessService {
 
     @Override
     public void requestBuild(long versionId, DocumentSplitParam params) {
-        DocumentSplitParam normalized = normalize(params);
-        String json;
-        try {
-            json = objectMapper.writeValueAsString(normalized);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("无法保存切片参数", e);
-        }
         DocumentVersion requested = requireVersion(versionId);
         transaction.executeWithoutResult(tx -> {
             Document doc = lockDocument(requested.getDocId());
@@ -132,6 +131,7 @@ public class DocumentProcessServiceImpl implements DocumentProcessService {
             if (version.getBuildStatus() == DocumentStatus.UPLOADING) {
                 throw new IllegalArgumentException("原文件尚未上传成功");
             }
+            String json = splitJson(version.getSourceObjectKey(), params);
             if (version.getSplitParam() != null) {
                 if (version.getSplitParam().equals(json)) return;
                 throw new IllegalArgumentException("已提交切片参数，修改参数请上传新版本");
@@ -230,7 +230,7 @@ public class DocumentProcessServiceImpl implements DocumentProcessService {
         try (InputStream input = storage.downloadFile(key)) {
             byte[] bytes = input.readAllBytes();
             if (type == FileType.EXCEL || type == FileType.CSV) {
-                textSegments = new ExcelSplitter(params.chunkSize(), false).split(bytes, key);
+                textSegments = new ExcelSplitter().split(bytes, key);
             } else {
                 textSegments = DocumentSplitterFactory.getInstance(params).split(
                         dev.langchain4j.data.document.Document.from(new String(bytes, StandardCharsets.UTF_8)));
@@ -357,15 +357,12 @@ public class DocumentProcessServiceImpl implements DocumentProcessService {
         }
     }
 
-    private static DocumentSplitParam normalize(DocumentSplitParam p) {
-        if (p.chunkSize() == null || p.chunkSize() <= 0 || p.chunkSize() > 100000) {
-            throw new IllegalArgumentException("切片大小须在 1 到 100000 之间");
+    private String splitJson(String filename, DocumentSplitParam requested) {
+        DocumentSplitParam resolved = DocumentSplitPolicy.resolve(FileTypeUtil.getFileType(filename), requested);
+        try {
+            return objectMapper.writeValueAsString(resolved);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("无法保存切片参数", e);
         }
-        int overlap = p.overlap() == null ? 0 : p.overlap();
-        if (overlap < 0 || overlap >= p.chunkSize()) throw new IllegalArgumentException("重叠长度须小于切片大小");
-        var normalized = new DocumentSplitParam(p.splitType(), p.chunkSize(), overlap,
-                p.titleLevel() == null ? 3 : p.titleLevel(), p.separator(), p.regex());
-        if (DocumentSplitterFactory.getInstance(normalized) == null) throw new IllegalArgumentException("未知切片方式");
-        return normalized;
     }
 }

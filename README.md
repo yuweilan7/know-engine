@@ -41,7 +41,20 @@ Set-Location D:\IdeaProject\know-engine
 
 ## 文档从上传到生效
 
-上传成功只表示原文件已保存。上传页随后提交这一版的切片参数，后台依次执行解析、切片和建立 ES 索引。待索引完整且可搜索，才把这一版设为生效版。更新期间，问答仍使用此前的生效版。
+新文档和新版本都在上传表单里选择切片策略，一次提交。「按文件类型自动选择」由服务端决定，页面关闭后后台仍继续处理。
+
+| 文件类型 | 默认切片策略 |
+| --- | --- |
+| PDF / Word | 按一级、二级标题切片，最长 900 字符，重叠 120 字符 |
+| Markdown | 按一级到三级标题切片，最长 900 字符，重叠 120 字符 |
+| TXT | 按长度切片，最长 600 字符，重叠 80 字符 |
+| CSV / Excel | 固定按表头和数据行切片 |
+
+按标题切片时，长章节会保留完整父块供问答回填；没有可用标题时按长度切片。
+
+1. **同步接收**：验证文件名和策略、计算文件哈希、预登记文档和版本，将文件写入 SeaweedFS。保存成功后把版本标为 `UPLOADED`，返回 HTTP `202` 和文档、版本 ID。原文件写入期间版本是 `UPLOADING`，后台不会读取未保存完成的文件。
+2. **异步构建**：Java 后台扫描 MySQL 里的待处理版本，依次解析文件、切片并写入 `knowledge_segment`、调用嵌入 API 并写入 ES。状态和切片策略存在 MySQL；重启后可以从已完成阶段继续。
+3. **异步发布**：刷新 ES 并按版本核对可检索切片数。通过后将索引标为 `READY`；若此期间生效版本未发生切换，同一事务把 `active_version_id` 指向新版。失败时原有生效版继续服务。上传页和版本列表都会刷新进度，升级前没有构建参数的版本可在列表里「补交构建」。
 
 | 位置 | 负责什么 |
 | --- | --- |
@@ -65,5 +78,6 @@ Set-Location D:\IdeaProject\know-engine
 - Python 3.12、CPU 版 PyTorch 2.9.1、`mineru[pipeline]`，不安装 CUDA、VLM 服务或 Gradio。PDF 使用 pipeline，DOCX 使用 MinerU 自带的 Office 解析。
 - 单任务、每次处理一页，CPU 上限 2 核、内存上限 4.5GiB、swap 上限 1GiB。普通文本和表格解析保留；公式识别关闭，以控制这台 4 核 8GB 服务器的内存消耗。
 - 首次 PDF 解析从 ModelScope 下载实际需要的模型，缓存在服务专属目录。服务启动健康检查不代表模型已下载或文档解析已成功。
+- Java 将 MinerU 解出的图片按字节传给视觉模型生成描述，对象存储地址留给本机浏览器。单张图片描述失败时，仍保留原图链接及已有说明，继续处理正文。
 - 部署源为 `install-mineru.sh`、`provision-mineru.sh`、`know-engine-mineru.service`。将三者放到同一个远端目录后，用 root 执行 `bash provision-mineru.sh`；依赖清单保存到 `/opt/know-engine-mineru/requirements.lock.txt`。
 - 诊断命令：`sudo systemctl status know-engine-mineru`、`sudo journalctl -u know-engine-mineru -n 80 --no-pager`。日常启动和停止仍使用本项目的 `KnowEngine.ps1`。

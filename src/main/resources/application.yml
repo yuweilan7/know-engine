@@ -7,6 +7,11 @@ spring:
     import: optional:file:./.local/credentials.properties,optional:file:./.local/cloud.properties
   application:
     name: KnowEngine
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
   servlet:
     multipart:
       enabled: true

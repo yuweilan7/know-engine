@@ -25,5 +25,8 @@ public enum SplitType {
     /**
      * 按分隔符切分
      */
-    SEPARATOR;
+    SEPARATOR,
+
+    /** 表格固定使用表头和数据行构造切片。 */
+    TABLE_ROWS
 }

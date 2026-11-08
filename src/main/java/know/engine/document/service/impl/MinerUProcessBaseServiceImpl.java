@@ -30,6 +30,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -42,6 +44,10 @@ import java.util.zip.ZipInputStream;
  */
 @Slf4j
 public abstract class MinerUProcessBaseServiceImpl implements FileProcessService {
+    // Keep the encoded image below the vision API's 20 MB data URI limit.
+    private static final long MAX_INLINE_IMAGE_BYTES = 14_000_000;
+
+    private record StoredImage(Path path, String url, String contentType) {}
 
     @Autowired
     private FileStorageService fileStorageService;
@@ -175,7 +181,7 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
         log.info("找到 Markdown 文件: {}, 图片文件数量: {}", mdFile, imageFiles.size());
 
         // 上传图片到 MinIO，并建立本地文件名到 MinIO URL 的映射
-        java.util.Map<String, String> imageUrlMap = new java.util.HashMap<>();
+        Map<String, StoredImage> images = new HashMap<>();
         String baseObjectName = outputPrefix;
 
         for (Path imagePath : imageFiles) {
@@ -184,7 +190,7 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
             String contentType = getImageContentType(imageName);
             String objectName = baseObjectName + "images/" + imageName;
             String imageUrl = fileStorageService.uploadFile(objectName, imageBytes, contentType);
-            imageUrlMap.put(imageName, imageUrl);
+            images.put(imageName, new StoredImage(imagePath, imageUrl, contentType));
             log.info("图片已上传到 MinIO: {} -> {}", imageName, imageUrl);
         }
 
@@ -192,7 +198,7 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
         String mdContent = Files.readString(mdFile, StandardCharsets.UTF_8);
 
         // 替换 md 中的图片地址为 MinIO 地址，并生成图片描述
-        String processedMdContent = processMarkdownImages(mdContent, imageUrlMap);
+        String processedMdContent = processMarkdownImages(mdContent, images);
 
         // 上传处理后的 md 文件到 MinIO
         String mdObjectName = baseObjectName + "document.md";
@@ -219,12 +225,13 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
      * 处理 Markdown 中的图片标签：替换地址并生成图片描述
      * 匹配格式: ![](xxx.png) 或 ![alt](xxx.png)
      */
-    private String processMarkdownImages(String mdContent, java.util.Map<String, String> imageUrlMap) {
+    private String processMarkdownImages(String mdContent, Map<String, StoredImage> images) {
         // 匹配图片标签的正则表达式: ![alt](path)
         Pattern pattern = Pattern.compile("!\\[(.*?)\\]\\(([^)]+)\\)");
         Matcher matcher = pattern.matcher(mdContent);
 
         StringBuffer result = new StringBuffer();
+        Map<String, String> descriptions = new HashMap<>();
         while (matcher.find()) {
             String altText = matcher.group(1);
             String imagePath = matcher.group(2);
@@ -233,26 +240,41 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
             String imageName = Paths.get(imagePath).getFileName().toString();
 
             // 获取 MinIO 上的图片 URL
-            String minioUrl = imageUrlMap.get(imageName);
-            if (minioUrl == null) {
+            StoredImage image = images.get(imageName);
+            if (image == null) {
                 // 如果找不到对应的 MinIO URL，保持原样
                 log.warn("未找到图片 {} 对应的 MinIO URL", imageName);
                 matcher.appendReplacement(result, Matcher.quoteReplacement(matcher.group(0)));
                 continue;
             }
 
-            // 生成图片描述（mock 实现）
-            String imageDescription = generateImageDescription(minioUrl);
+            String description = descriptions.computeIfAbsent(imageName, name -> describeStoredImage(image));
+            String imageDescription = description.isBlank() ? altText : description;
 
             // 构建新的图片标签: ![描述](minio_url)
-            String newImageTag = "![" + imageDescription + "](" + minioUrl + ")";
+            String newImageTag = "![" + imageDescription + "](" + image.url() + ")";
             matcher.appendReplacement(result, Matcher.quoteReplacement(newImageTag));
-
-            log.info("图片标签已处理: {} -> {}", imagePath, minioUrl);
         }
         matcher.appendTail(result);
 
         return result.toString();
+    }
+
+    private String describeStoredImage(StoredImage image) {
+        try {
+            if (Files.size(image.path()) > MAX_INLINE_IMAGE_BYTES) {
+                log.warn("图片超过描述接口大小限制，保留原图和说明: {}", image.path().getFileName());
+                return "";
+            }
+            // The S3 URL is for the local browser. Send the extracted bytes to the vision API.
+            String text = generateImageDescription(ImageContent.from(image.path(), image.contentType()));
+            return text == null ? "" : text.replaceAll("[\\r\\n]+", " ").trim()
+                    .replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]");
+        } catch (Exception e) {
+            // Image descriptions are optional; keep the original alt text and the usable S3 link.
+            log.warn("生成图片描述失败，保留原图和说明: {} ({})", image.path().getFileName(), e.getClass().getSimpleName());
+            return "";
+        }
     }
 
     @Value("${langchain4j.open-ai.chat-model.api-key}")
@@ -262,22 +284,25 @@ public abstract class MinerUProcessBaseServiceImpl implements FileProcessService
     private String chatModelBaseUrl;
 
     /**
-     * 生成图片描述
-     * 需要注意的是，如果你用的是外部的模型，这个url需要是公网可以访问的url。否则模型需要能和MinIO进行内网通信。
+     * 为 Markdown 中已有的图片 URL 生成描述。
      */
     public String generateImageDescription(String imageUrl) {
+        return generateImageDescription(ImageContent.from(imageUrl));
+    }
+
+    private String generateImageDescription(ImageContent image) {
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
                 .apiKey(chatModelApiKey)
                 .baseUrl(chatModelBaseUrl)
                 .modelName("qwen3-vl-plus")
                 .temperature(0.7)
-                .logResponses(true)
-                .logRequests(true)
+                .logResponses(false)
+                .logRequests(false)
                 .build();
 
         UserMessage userMessage = UserMessage.from(
                 new TextContent(promptService.getPrompt(PromptResources.IMAGE_DESCRIPTION_USER)),
-                new ImageContent(imageUrl)
+                image
         );
         return chatModel.chat(userMessage).aiMessage().text();
     }

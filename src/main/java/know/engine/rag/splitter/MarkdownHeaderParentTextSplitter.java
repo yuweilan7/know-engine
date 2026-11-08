@@ -5,6 +5,7 @@ import know.engine.infra.snowflake.SnowflakeIdGenerator;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentSplitter;
 import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.document.splitter.DocumentByWordSplitter;
 import dev.langchain4j.data.segment.TextSegment;
 
 import java.util.*;
@@ -141,6 +142,10 @@ public class MarkdownHeaderParentTextSplitter implements DocumentSplitter {
 
         List<TextSegment> result = new ArrayList<>();
         List<DocumentWithMetadata> segments = splitWithMetadata(text, document.metadata().toMap());
+        if (chunkSize > 0 && segments.stream().noneMatch(segment -> segment.getMetadata().containsKey(HEADER_LEVEL))) {
+            // A flat document has no useful section to return as a parent chunk.
+            return new DocumentByWordSplitter(chunkSize, overlap).split(document);
+        }
         for (DocumentWithMetadata segment : segments) {
             result.add(new TextSegment(segment.getContent(), Metadata.from(segment.getMetadata())));
         }

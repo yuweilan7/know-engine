@@ -261,12 +261,14 @@
                 </div>
                 <div class="form-group">
                     <label>选择文件 *</label>
-                    <input type="file" id="versionFile" required>
+                    <input type="file" id="versionFile" accept=".pdf,.doc,.docx,.md,.txt,.csv,.xls,.xlsx" required>
                 </div>
+                <div id="newVersionSplitOptions"></div>
+                <p class="param-hint">新版核验通过后自动发布，处理期间继续使用当前生效版。</p>
             </form>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('versionModal')">取消</button>
-                <button class="btn btn-success" onclick="submitVersion()">上传新版本</button>
+                <button class="btn btn-success" type="submit" form="versionForm" id="versionUploadBtn">上传并处理</button>
             </div>
         </div>
     </div>
@@ -284,75 +286,28 @@
         </div>
     </div>
 
-    <!-- 版本上传后切片弹窗 -->
+    <!-- 为升级前尚未登记构建参数的版本补交 -->
     <div class="modal-overlay" id="versionSplitModal">
         <div class="modal">
             <div class="modal-header">
-                <h2>📄 文档切片设置 <span id="versionSplitTitle" style="font-size:14px;color:#888;"></span></h2>
+                <h2>补交构建 <span id="versionSplitTitle" style="font-size:14px;color:#888;"></span></h2>
                 <button class="modal-close" onclick="closeModal('versionSplitModal')">&times;</button>
             </div>
             <form id="versionSplitForm">
                 <input type="hidden" id="versionSplitDocId">
                 <input type="hidden" id="versionSplitVersionId">
-                <div class="table-split-notice" id="versionTableSplitNotice">
-                    <strong>表格文件固定处理：</strong>XLSX / CSV 会按「首行表头 + 逐行键值对」切分，每行生成一个分段。无需也不支持选择 LENGTH / TITLE 等切分方式。
-                </div>
-                <div id="versionSplitParamsPanel">
-                    <div class="form-group">
-                        <label>切片方式 *</label>
-                        <select id="versionSplitType" required>
-                            <option value="">请选择切片方式</option>
-                            <option value="LENGTH">按长度切分 (LENGTH)</option>
-                            <option value="TITLE">按标题切分 (TITLE)</option>
-                            <option value="REGEX">按正则切分 (REGEX)</option>
-                            <option value="SMART">智能切分 (SMART)</option>
-                            <option value="SEPARATOR">按分隔符切分 (SEPARATOR)</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>最大分段长度 *</label>
-                        <input type="number" id="versionSplitChunkSize" placeholder="例如：500" min="1" required>
-                        <div class="param-hint">所有切分方式都需要此参数</div>
-                    </div>
-                    <div class="param-group" id="versionSplitOverlapGroup">
-                        <div class="form-group">
-                            <label>分段重叠长度</label>
-                            <input type="number" id="versionSplitOverlap" placeholder="例如：50" min="0">
-                            <div class="param-hint">按长度切分、按标题切分需要</div>
-                        </div>
-                    </div>
-                    <div class="param-group" id="versionSplitTitleLevelGroup">
-                        <div class="form-group">
-                            <label>标题级数</label>
-                            <input type="number" id="versionSplitTitleLevel" placeholder="例如：3" min="1" max="6">
-                            <div class="param-hint">按标题切分需要，范围1-6</div>
-                        </div>
-                    </div>
-                    <div class="param-group" id="versionSplitRegexGroup">
-                        <div class="form-group">
-                            <label>正则表达式</label>
-                            <input type="text" id="versionSplitRegex" placeholder="例如：\n\n+">
-                            <div class="param-hint">按正则切分需要</div>
-                        </div>
-                    </div>
-                    <div class="param-group" id="versionSplitSeparatorGroup">
-                        <div class="form-group">
-                            <label>分隔符</label>
-                            <input type="text" id="versionSplitSeparator" placeholder="例如：\n\n">
-                            <div class="param-hint">按分隔符切分需要</div>
-                        </div>
-                    </div>
-                </div>
+                <div id="legacySplitOptions"></div>
             </form>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('versionSplitModal')">跳过</button>
-                <button class="btn btn-primary" id="versionSplitBtn" onclick="submitVersionSplit()">开始切片</button>
+                <button class="btn btn-secondary" onclick="closeModal('versionSplitModal')">取消</button>
+                <button class="btn btn-primary" type="submit" form="versionSplitForm" id="versionSplitBtn">提交构建</button>
             </div>
         </div>
     </div>
 
     <div class="toast" id="toast"></div>
 
+    <script src="/document-build.js"></script>
     <script>
         // ===== 状态管理 =====
         let currentPage = 1;
@@ -448,7 +403,7 @@
                     <td class="checkbox-cell"><input type="checkbox" value="${doc.docId}" onchange="toggleSelect(${doc.docId})" ${selectedIds.has(doc.docId) ? 'checked' : ''}></td>
                     <td>${doc.docId}</td>
                     <td class="doc-title" title="${escapeHtml(doc.docTitle)}">${escapeHtml(doc.docTitle)}</td>
-                    <td>${statusTag(doc.activeVersionId ? 'ACTIVE' : 'DRAFT')}</td>
+                    <td id="statusCell-${doc.docId}">${statusTag(doc.activeVersionId ? 'ACTIVE' : 'DRAFT')}</td>
                     <td class="doc-desc" title="${escapeHtml(doc.description)}">${escapeHtml(doc.description || '-')}</td>
                     <td id="versionCell-${doc.docId}" style="min-width:90px;">
                         <span style="color:#999;font-size:13px;">加载中...</span>
@@ -474,20 +429,23 @@
             await Promise.all(records.map(async (doc) => {
                 try {
                     const res = await fetch(`/api/document/versions/${doc.docId}`);
-                    if (res.ok) {
-                        const versions = await res.json();
-                        const cell = document.getElementById(`versionCell-${doc.docId}`);
-                        if (!cell) return;
-                        const active = versions.find(v => v.active)?.revision;
-                        const draft = versions.find(v => !v.active)?.revision;
-                        const activeLabel = active ? '生效 v' + escapeHtml(active.version) : '暂无生效版';
-                        const draftLabel = draft && (!active || draft.versionId > active.versionId)
-                            ? ' · v' + escapeHtml(draft.version) + ' ' + versionState(draft) : '';
-                        cell.innerHTML = '<button class="btn btn-xs btn-secondary" onclick="viewVersions(' + doc.docId + ')">'
-                            + activeLabel + draftLabel + '</button>';
-                    }
+                    if (res.ok) renderVersionSummary(doc.docId, await res.json());
                 } catch (e) { /* ignore */ }
             }));
+        }
+
+        function renderVersionSummary(docId, versions) {
+            const cell = document.getElementById(`versionCell-${docId}`);
+            const status = document.getElementById(`statusCell-${docId}`);
+            if (!cell || !status) return;
+            const active = versions.find(v => v.active)?.revision;
+            const draft = versions.find(v => !v.active)?.revision;
+            const activeLabel = active ? '生效 v' + escapeHtml(active.version) : '暂无生效版';
+            const draftLabel = draft && (!active || draft.versionId > active.versionId)
+                ? ' · v' + escapeHtml(draft.version) + ' ' + escapeHtml(describeVersion(draft)) : '';
+            status.innerHTML = statusTag(active ? 'ACTIVE' : 'DRAFT');
+            cell.innerHTML = '<button class="btn btn-xs btn-secondary" onclick="viewVersions(' + docId + ')">'
+                + activeLabel + draftLabel + '</button>';
         }
 
         function renderPagination() {
@@ -590,14 +548,18 @@
         }
 
         // ===== 版本管理 =====
+        const versionForm = document.getElementById('versionForm');
+        const versionFile = document.getElementById('versionFile');
+        const newVersionSplit = mountSplitOptions(document.getElementById('newVersionSplitOptions'), versionFile);
+        versionForm.addEventListener('submit', submitVersion);
+
         async function openVersionModal(docId) {
             const doc = docRecords.find(d => d.docId === docId);
             const docTitle = doc ? (doc.docTitle || '') : '';
             document.getElementById('versionDocTitle').textContent = `- ${docTitle}`;
+            versionForm.reset();
             document.getElementById('versionDocId').value = docId;
-            document.getElementById('versionNumber').value = '';
-            document.getElementById('versionChangelog').value = '';
-            document.getElementById('versionFile').value = '';
+            newVersionSplit.update('');
 
             // 获取已有版本列表，自动建议下一个版本号
             try {
@@ -620,7 +582,8 @@
             openModal('versionModal');
         }
 
-        async function submitVersion() {
+        async function submitVersion(event) {
+            event.preventDefault();
             const docId = document.getElementById('versionDocId').value;
             const version = document.getElementById('versionNumber').value;
             const changelog = document.getElementById('versionChangelog').value.trim();
@@ -634,7 +597,11 @@
             formData.append('docId', docId);
             formData.append('version', version);
             if (changelog) formData.append('changelog', changelog);
+            newVersionSplit.appendTo(formData);
 
+            const submit = document.getElementById('versionUploadBtn');
+            submit.disabled = true;
+            submit.textContent = '上传中…';
             try {
                 const res = await fetch('/api/document/upload-version', {
                     method: 'POST',
@@ -645,39 +612,42 @@
                     showToast(errText || '上传失败', 'error');
                     return;
                 }
-                const doc = await res.json();
-                showToast(`新版本 v${version} 上传成功`);
+                await res.json();
+                showToast(`新版本 v${version} 已接收`);
                 closeModal('versionModal');
-                // 弹出切片设置弹窗；表格文件按扩展名隐藏无用切分参数
-                openVersionSplitModal(doc, fileInput.files[0].name);
+                viewVersions(docId);
             } catch (e) {
                 showToast('上传失败: ' + e.message, 'error');
+            } finally {
+                submit.disabled = false;
+                submit.textContent = '上传并处理';
             }
         }
 
-        function versionState(v) {
-            if (v.lastError) return v.nextRetryAt ? '失败，等待自动重试' : '处理失败';
-            if (v.indexStatus === 'READY') return '索引就绪';
-            if (v.indexStatus === 'PENDING') return '正在构建索引';
-            if (v.buildStatus === 'CONVERTED' && v.splitParam) return '等待切片';
-            return STATUS_MAP[v.buildStatus] || v.buildStatus;
+        let versionRows = [];
+        let versionListToken = 0;
+        let versionListTimer;
+        function viewVersions(docId) {
+            document.getElementById('versionListTitle').textContent = ' · 文档 #' + docId;
+            document.getElementById('versionListContent').textContent = '加载中…';
+            clearTimeout(versionListTimer);
+            if (!document.getElementById('versionListModal').classList.contains('show')) openModal('versionListModal');
+            refreshVersions(docId, ++versionListToken);
         }
 
-        let versionRows = [];
-        async function viewVersions(docId) {
-            document.getElementById('versionListTitle').textContent = ' · 文档 #' + docId;
+        async function refreshVersions(docId, token) {
             const list = document.getElementById('versionListContent');
-            list.textContent = '加载中…';
-            openModal('versionListModal');
             try {
                 const res = await fetch('/api/document/versions/' + docId);
                 if (!res.ok) throw new Error(await res.text());
-                versionRows = await res.json();
+                const rows = await res.json();
+                if (token !== versionListToken) return;
+                versionRows = rows;
                 list.innerHTML = versionRows.map(({revision: v, active, docUrl}, i) => {
                     const retry = v.lastError && v.buildStatus !== 'UPLOADING'
                         ? '<button class="btn btn-xs btn-primary" onclick="retryVersion(' + docId + ',' + v.versionId + ')">重试</button>' : '';
                     const build = !v.splitParam && ['UPLOADED', 'CONVERTED'].includes(v.buildStatus)
-                        ? '<button class="btn btn-xs btn-primary" onclick="configureVersion(' + i + ')">设置切片</button>' : '';
+                        ? '<button class="btn btn-xs btn-primary" onclick="configureVersion(' + i + ')">补交构建</button>' : '';
                     const publish = !active && v.indexStatus === 'READY'
                         ? '<button class="btn btn-xs btn-primary" onclick="switchVersion(' + docId + ',' + v.versionId + ')">设为生效</button>' : '';
                     const view = v.buildStatus === 'CHUNKED'
@@ -685,15 +655,20 @@
                     const download = docUrl && /^https?:\/\//.test(docUrl)
                         ? '<a class="btn btn-xs btn-secondary" href="' + escapeHtml(docUrl).replaceAll('"', '&quot;') + '" target="_blank" rel="noopener">原文件</a>' : '';
                     return '<div style="padding:12px;border-bottom:1px solid #ddd"><strong>v' + escapeHtml(v.version)
-                        + '</strong> · ' + (active ? '生效中' : escapeHtml(versionState(v)))
+                        + '</strong> · ' + escapeHtml(describeVersion(v, active))
                         + (v.changelog ? '<div>' + escapeHtml(v.changelog) + '</div>' : '')
                         + (v.lastError ? '<div style="color:#b42318">' + escapeHtml(v.lastError) + '</div>' : '')
                         + '<div style="display:flex;gap:8px;margin-top:8px">' + build + retry + publish + view + download + '</div></div>';
                 }).join('') || '暂无版本';
-                list.insertAdjacentHTML('afterbegin', '<button class="btn btn-xs btn-secondary" onclick="viewVersions(' + docId + ')">刷新进度</button>');
+                renderVersionSummary(docId, rows);
+                if (rows.some(({revision, active}) => versionBuildPending(revision, active))) {
+                    versionListTimer = setTimeout(() => refreshVersions(docId, token), 3000);
+                }
             } catch (error) {
+                if (token !== versionListToken) return;
                 list.textContent = error.message;
             }
+            list.insertAdjacentHTML('afterbegin', '<button class="btn btn-xs btn-secondary" onclick="viewVersions(' + docId + ')">刷新进度</button>');
         }
 
         function configureVersion(i) {
@@ -710,7 +685,7 @@
         }
 
         async function switchVersion(docId, versionId) {
-            const confirmMsg = '切换版本后需要重新切片，旧版本数据将在新版本向量化完成后自动清理。确认切换？';
+            const confirmMsg = '确认将此已就绪版本设为生效版？';
             if (!confirm(confirmMsg)) return;
             try {
                 const res = await fetch(`/api/document/switch-version?docId=${docId}&versionId=${versionId}`, { method: 'POST' });
@@ -926,134 +901,45 @@
             const el = document.getElementById(id);
             el.classList.remove('show');
             el.style.zIndex = '';
-        }
-
-        // ===== 版本上传后切片 =====
-        const TABLE_SPLIT_DEFAULTS = { splitType: 'LENGTH', chunkSize: '500', overlap: '0' };
-        let versionSplitIsTableMode = false;
-
-        function getFileExtension(fileName) {
-            if (!fileName) return '';
-            const idx = fileName.lastIndexOf('.');
-            return idx >= 0 ? fileName.substring(idx + 1).toLowerCase() : '';
-        }
-
-        function isTableFile(fileName) {
-            const ext = getFileExtension(fileName);
-            return ext === 'xlsx' || ext === 'xls' || ext === 'csv';
-        }
-
-        function openVersionSplitModal(doc, uploadedFileName) {
-            document.getElementById('versionSplitForm').reset();
-            document.getElementById('versionSplitVersionId').value = doc.versionId;
-            document.getElementById('versionSplitDocId').value = doc.docId;
-            document.getElementById('versionSplitTitle').textContent = doc.docTitle ? `- ${doc.docTitle}` : '';
-            // 隐藏所有参数组
-            ['versionSplitOverlapGroup', 'versionSplitTitleLevelGroup', 'versionSplitRegexGroup', 'versionSplitSeparatorGroup']
-                .forEach(id => document.getElementById(id).classList.remove('show'));
-
-            versionSplitIsTableMode = isTableFile(uploadedFileName);
-            const notice = document.getElementById('versionTableSplitNotice');
-            const paramsPanel = document.getElementById('versionSplitParamsPanel');
-            notice.classList.toggle('is-visible', versionSplitIsTableMode);
-            paramsPanel.style.display = versionSplitIsTableMode ? 'none' : 'block';
-
-            if (versionSplitIsTableMode) {
-                document.getElementById('versionSplitType').value = TABLE_SPLIT_DEFAULTS.splitType;
-                document.getElementById('versionSplitChunkSize').value = TABLE_SPLIT_DEFAULTS.chunkSize;
-                document.getElementById('versionSplitOverlap').value = TABLE_SPLIT_DEFAULTS.overlap;
-            } else if (doc.extension) {
-                // 从 extension 中解析上次分段参数并回显
-                try {
-                    const ext = JSON.parse(doc.extension);
-                    if (ext.splitParam) {
-                        const sp = ext.splitParam;
-                        if (sp.splitType) document.getElementById('versionSplitType').value = sp.splitType;
-                        if (sp.chunkSize) document.getElementById('versionSplitChunkSize').value = sp.chunkSize;
-                        if (sp.overlap != null) document.getElementById('versionSplitOverlap').value = sp.overlap;
-                        if (sp.titleLevel != null) document.getElementById('versionSplitTitleLevel').value = sp.titleLevel;
-                        if (sp.regex) document.getElementById('versionSplitRegex').value = sp.regex;
-                        if (sp.separator) document.getElementById('versionSplitSeparator').value = sp.separator;
-                        // 触发 change 事件以显示/隐藏对应参数组
-                        document.getElementById('versionSplitType').dispatchEvent(new Event('change'));
-                    }
-                } catch (e) { /* ignore */ }
+            if (id === 'versionListModal') {
+                versionListToken++;
+                clearTimeout(versionListTimer);
             }
+        }
 
+        // ===== 历史版本补交构建 =====
+        const legacyForm = document.getElementById('versionSplitForm');
+        const legacySplit = mountSplitOptions(document.getElementById('legacySplitOptions'));
+
+        function openVersionSplitModal(v, filename) {
+            legacyForm.reset();
+            document.getElementById('versionSplitVersionId').value = v.versionId;
+            document.getElementById('versionSplitDocId').value = v.docId;
+            document.getElementById('versionSplitTitle').textContent = ` · v${v.version}`;
+            legacySplit.update(filename);
             openModal('versionSplitModal');
         }
 
-        document.getElementById('versionSplitType').addEventListener('change', function() {
-            if (versionSplitIsTableMode) return;
-            const splitType = this.value;
-            ['versionSplitOverlapGroup', 'versionSplitTitleLevelGroup', 'versionSplitRegexGroup', 'versionSplitSeparatorGroup']
-                .forEach(id => document.getElementById(id).classList.remove('show'));
-            if (splitType === 'LENGTH' || splitType === 'TITLE') {
-                document.getElementById('versionSplitOverlapGroup').classList.add('show');
-            }
-            if (splitType === 'TITLE') {
-                document.getElementById('versionSplitTitleLevelGroup').classList.add('show');
-            }
-            if (splitType === 'REGEX') {
-                document.getElementById('versionSplitRegexGroup').classList.add('show');
-            }
-            if (splitType === 'SEPARATOR') {
-                document.getElementById('versionSplitSeparatorGroup').classList.add('show');
-            }
-        });
-
-        async function submitVersionSplit() {
+        legacyForm.addEventListener('submit', async event => {
+            event.preventDefault();
             const docId = document.getElementById('versionSplitDocId').value;
             const versionId = document.getElementById('versionSplitVersionId').value;
-            let splitType = document.getElementById('versionSplitType').value;
-            let chunkSize = document.getElementById('versionSplitChunkSize').value;
-            let overlap = document.getElementById('versionSplitOverlap').value || 0;
-            let titleLevel = document.getElementById('versionSplitTitleLevel').value || '';
-            let regex = document.getElementById('versionSplitRegex').value || '';
-            let separator = document.getElementById('versionSplitSeparator').value || '';
-
-            if (versionSplitIsTableMode) {
-                splitType = TABLE_SPLIT_DEFAULTS.splitType;
-                chunkSize = TABLE_SPLIT_DEFAULTS.chunkSize;
-                overlap = TABLE_SPLIT_DEFAULTS.overlap;
-                titleLevel = '';
-                regex = '';
-                separator = '';
-            } else {
-                if (!splitType) { showToast('请选择切片方式', 'error'); return; }
-                if (!chunkSize || chunkSize < 1) { showToast('请输入有效的最大分段长度', 'error'); return; }
-            }
-
             const params = new URLSearchParams({ versionId });
-            params.append('splitType', splitType);
-            params.append('chunkSize', chunkSize);
-            params.append('overlap', overlap);
-            params.append('titleLevel', titleLevel);
-            params.append('regex', regex);
-            params.append('separator', separator);
-
+            legacySplit.appendTo(params);
             const btn = document.getElementById('versionSplitBtn');
             btn.disabled = true;
-            btn.textContent = '切片中...';
-
             try {
-                const res = await fetch(`/api/document/split/${docId}?${params.toString()}`, { method: 'POST' });
-                if (res.ok) {
-                    showToast('已提交构建，完成后自动发布');
-                    closeModal('versionSplitModal');
-                    versionSplitIsTableMode = false;
-                    loadDocuments();
-                } else {
-                    const errText = await res.text();
-                    showToast(errText || '切片失败', 'error');
-                }
+                const res = await fetch(`/api/document/split/${docId}?${params}`, { method: 'POST' });
+                if (!res.ok) throw new Error(await res.text());
+                showToast('已提交构建');
+                closeModal('versionSplitModal');
+                viewVersions(docId);
             } catch (e) {
-                showToast('切片失败: ' + e.message, 'error');
+                showToast('提交失败: ' + e.message, 'error');
             } finally {
                 btn.disabled = false;
-                btn.textContent = '开始切片';
             }
-        }
+        });
         // 点击遮罩关闭弹窗
         document.querySelectorAll('.modal-overlay').forEach(overlay => {
             overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay.id); });
@@ -1061,8 +947,10 @@
         // 回车搜索
         document.getElementById('filterTitle').addEventListener('keydown', e => { if (e.key === 'Enter') searchDocuments(); });
 
-        // 初始化：加载文档列表
+        // 初始化：可从上传进度直接进入该文档的版本列表。
         loadDocuments();
+        const initialDocId = new URLSearchParams(location.search).get('docId');
+        if (initialDocId && /^\d+$/.test(initialDocId)) viewVersions(initialDocId);
     </script>
 </body>
 </html>
