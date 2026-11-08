@@ -106,7 +106,7 @@ public class KnowEngineReRankingContentAggregator implements ContentAggregator {
      * 不使用 LangChain4j 默认 {@code ReciprocalRankFuser}：其对 {@code DefaultContent} 的判等会因
      * {@code RETRIEVAL_SOURCE} 不同而把同一片段当成两条，无法正确累加 RRF 分与合并来源
      */
-    protected List<Content> fuse(Map<Query, Collection<List<Content>>> queryToContents) {
+    public List<Content> fuse(Map<Query, Collection<List<Content>>> queryToContents) {
         List<List<KnowEngineDefaultContent>> listsOfContents = queryToContents.values().stream()
                 .flatMap(Collection::stream)
                 .map(list -> list.stream()
@@ -132,7 +132,7 @@ public class KnowEngineReRankingContentAggregator implements ContentAggregator {
      * @param contents 多路 RRF 之后的候选（已按 RRF 分降序）
      * @param query    阶段一选出的、给 重排模型当「问题」用的 Query
      */
-    protected List<Content> reRankAndFilter(List<Content> contents, Query query) {
+    public List<Content> reRankAndFilter(List<Content> contents, Query query) {
 
         // TextSegment → 原始 Content，便于打分后把元数据带回去
         Map<TextSegment, Content> segmentToOriginal = new HashMap<>();

@@ -4,10 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.scoring.ScoringModel;
+import know.engine.ai.config.OnlineModelHttpClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -28,16 +28,14 @@ public class DashScopeScoringModel implements ScoringModel {
 
     public DashScopeScoringModel(@Value("${dashscope.api-key}") String apiKey,
                                  @Value("${dashscope.rerank.url}") URI endpoint,
-                                 @Value("${dashscope.rerank.model-name}") String model) {
+                                 @Value("${dashscope.rerank.model-name}") String model,
+                                 OnlineModelHttpClient transport) {
         if (!"https".equalsIgnoreCase(endpoint.getScheme()) || endpoint.getHost() == null || endpoint.getUserInfo() != null) {
             throw new IllegalArgumentException("DashScope rerank URL must be an HTTPS endpoint");
         }
         this.endpoint = endpoint;
         this.model = model;
-        var requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout(Duration.ofSeconds(5));
-        requestFactory.setReadTimeout(Duration.ofSeconds(25));
-        this.client = RestClient.builder().requestFactory(requestFactory)
+        this.client = transport.restClient(Duration.ofMillis(1500))
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                 .build();
     }

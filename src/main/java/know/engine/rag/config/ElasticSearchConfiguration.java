@@ -1,19 +1,23 @@
 package know.engine.rag.config;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch.ElasticsearchAsyncClient;
 import co.elastic.clients.elasticsearch._types.mapping.DenseVectorSimilarity;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
 import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import know.engine.ai.config.OnlineModelHttpClient;
 import lombok.RequiredArgsConstructor;
 import org.apache.http.HttpHost;
 import org.elasticsearch.client.RestClient;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Configuration;
 
 import java.io.IOException;
+import java.time.Duration;
 
 @Configuration
 @EnableConfigurationProperties(ElasticSearchProperties.class)
@@ -26,6 +30,7 @@ public class ElasticSearchConfiguration {
     private final ElasticSearchProperties properties;
 
     @Bean
+    @Primary
     public OpenAiEmbeddingModel openAiEmbeddingModel() {
         return OpenAiEmbeddingModel.builder()
                 .modelName(properties.getModelName())
@@ -33,6 +38,19 @@ public class ElasticSearchConfiguration {
                 .baseUrl(properties.getBaseUrl())
                 .maxSegmentsPerBatch(9)
                 .apiKey(properties.getApiKey()).build();
+    }
+
+    @Bean
+    public OpenAiEmbeddingModel queryEmbeddingModel(OnlineModelHttpClient transport) {
+        return OpenAiEmbeddingModel.builder()
+                .modelName(properties.getModelName())
+                .dimensions(properties.getDimensions())
+                .baseUrl(properties.getBaseUrl())
+                .apiKey(properties.getApiKey())
+                .httpClientBuilder(transport.builder())
+                .timeout(Duration.ofMillis(1600))
+                .maxRetries(0)
+                .build();
     }
 
     @Bean(destroyMethod = "close")
@@ -69,5 +87,10 @@ public class ElasticSearchConfiguration {
             throw new IllegalStateException("知识索引与当前向量模型不匹配，请重建后再切换别名");
         }
         return client;
+    }
+
+    @Bean(destroyMethod = "")
+    public ElasticsearchAsyncClient onlineSearchClient(ElasticsearchClient knowledgeIndexClient) {
+        return new ElasticsearchAsyncClient(knowledgeIndexClient._transport());
     }
 }

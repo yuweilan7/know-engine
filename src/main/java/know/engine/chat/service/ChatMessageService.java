@@ -78,4 +78,6 @@ public interface ChatMessageService extends IService<ChatMessage> {
      * @return 消息列表
      */
     List<ChatMessage> getRecentMessages(String conversationId, int limit);
+
+    List<ChatMessage> getRecentMessagesBefore(String conversationId, String messageId, int limit);
 }

@@ -60,7 +60,8 @@ public class DatabaseChatMemoryStore implements ChatMemoryStore {
         }
 
         // Redis 未命中，从数据库加载
-        List<dev.langchain4j.data.message.ChatMessage> messages = loadFromDatabase(memoryId.toString());
+        List<dev.langchain4j.data.message.ChatMessage> messages =
+                toModelHistory(chatMessageService.getRecentMessages(memoryId.toString(), MAX_MESSAGES));
         // 写入 Redis
         saveToRedis(key, messages);
         return messages;
@@ -87,9 +88,11 @@ public class DatabaseChatMemoryStore implements ChatMemoryStore {
      * 从数据库加载历史消息
      * 注意：过滤掉意图识别结果消息（INTENT_RECOGNITION），避免污染对话上下文
      */
-    private List<dev.langchain4j.data.message.ChatMessage> loadFromDatabase(String conversationId) {
-        List<ChatMessage> dbMessages = chatMessageService.getRecentMessages(conversationId, MAX_MESSAGES);
+    public List<dev.langchain4j.data.message.ChatMessage> loadHistory(String conversationId, String currentMessageId) {
+        return toModelHistory(chatMessageService.getRecentMessagesBefore(conversationId, currentMessageId, MAX_MESSAGES));
+    }
 
+    private List<dev.langchain4j.data.message.ChatMessage> toModelHistory(List<ChatMessage> dbMessages) {
         List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
         for (ChatMessage dbMessage : dbMessages) {
             if (dbMessage.getContent() == null || dbMessage.getContent().isEmpty()) {

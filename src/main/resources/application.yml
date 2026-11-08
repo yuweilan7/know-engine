@@ -27,7 +27,12 @@ spring:
       initial-size: 1
       min-idle: 1
       max-active: 6
-    max-wait: 60000
+      max-wait: 400
+      connect-timeout: 1500
+      socket-timeout: 2500
+      query-timeout: 2
+      fail-fast: true
+      connection-properties: autoReconnect=false;autoReconnectForPools=false
     time-between-eviction-runs-millis: 60000
     min-evictable-idle-time-millis: 300000
     validation-query: SELECT 1
@@ -54,12 +59,12 @@ spring:
   redis:
     redisson:
       config: |
+        lazyInitialization: true
         singleServerConfig:
           idleConnectionTimeout: 10000
-          connectTimeout: 10000
-          timeout: 3000
-          retryAttempts: 3
-          retryInterval: 1500
+          connectTimeout: 1500
+          timeout: 500
+          retryAttempts: 0
           username: ${spring.data.redis.username}
           password: ${spring.data.redis.password}
           subscriptionsPerConnection: 5
@@ -82,6 +87,16 @@ mybatis-plus:
     # 定时任务会频繁检查待处理版本，SQL 通过 DEBUG 日志按需查看。
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   mapper-locations: classpath*:/mapper/**/*.xml
+
+know-engine:
+  chat:
+    max-concurrent: 8
+    preparation-timeout: 6s
+    first-answer-timeout: 12s
+    stream-idle-timeout: 10s
+    total-timeout: 45s
+    vector-enabled: true
+    rerank-enabled: true
 
 # 百炼 OpenAI 兼容接口，Key 由本地私有配置或环境变量注入。
 dashscope:

@@ -85,10 +85,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     public List<ChatMessage> getRecentMessages(String conversationId, int limit) {
         // 查询最新的 limit+2 条，排除最新的2条（当前轮次刚保存的user消息和空assistant消息）
         Page<ChatMessage> page = this.page(
-                new Page<>(1, limit + 2),
+                new Page<>(1, limit + 2, false),
                 new LambdaQueryWrapper<ChatMessage>()
                         .eq(ChatMessage::getConversationId, conversationId)
-                        .orderByDesc(ChatMessage::getCreatedAt)
+                        .orderByDesc(ChatMessage::getId)
         );
 
         List<ChatMessage> records = page.getRecords();
@@ -102,5 +102,17 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         // 返回列表需要反转，使其按时间正序排列
         java.util.Collections.reverse(records);
         return records;
+    }
+
+    @Override
+    public List<ChatMessage> getRecentMessagesBefore(String conversationId, String messageId, int limit) {
+        var page = this.page(new Page<>(1, limit, false), new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getConversationId, conversationId)
+                .apply("id < (select id from chat_message where conversation_id = {0} and message_id = {1})",
+                        conversationId, messageId)
+                .isNotNull(ChatMessage::getContent)
+                .ne(ChatMessage::getContent, "")
+                .orderByDesc(ChatMessage::getId));
+        return page.getRecords().reversed();
     }
 }
