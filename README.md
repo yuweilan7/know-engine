@@ -1,6 +1,6 @@
 # Know Engine
 
-Java 应用运行在 Windows 本机，中间件运行在现有云服务器。模型统一调用百炼 API。Windows 通过 SSH 转发连接数据库、缓存、索引和对象存储，浏览器访问本机 `8009`。
+Java 应用运行在 Windows 本机，Spring MVC 同时提供后端 API 和静态页面，浏览器访问本机 `8009`。MySQL、Redis、Elasticsearch、SeaweedFS 和 MinerU 在云服务器运行，Windows 通过 SSH 转发访问。聊天、向量化和重排调用千问百炼 API。
 
 ## 启停
 
@@ -68,6 +68,26 @@ Set-Location D:\IdeaProject\know-engine
 后台使用单实例定时扫描。构建失败时，版本列表展示失败阶段，可以点“重试”。已经切好的分块会在索引重试时复用。原文件、解析结果和图片位于各自版本目录。分块列表用于查看，修改内容走上传新版本。两个检索通道在同一轮问答内共用一次 MySQL 生效版本查询。
 
 新库使用 `src/main/resources/sql/schema.sql` 初始化。旧库先停止旧 Java 进程，再用 MySQL 管理员账号在 `know_engine` 库执行一次 `src/main/resources/sql/upgrade-document-versions.sql`。迁移保留分块 ID，并让新进程按现有分块重建索引。ES 的 `know-engine-chunks` 别名是新代码的读写入口。已有历史 URL 转换成对象键，脚本默认桶名为 `know-engine`。
+
+## 聊天轮次与 SSE
+
+1. `POST /chat/runs` 创建轮次。示例请求体为 `{"clientRequestId":"unique-123","content":"如何排查网关告警？","mode":"RAG"}`。已有会话可传 `conversationId`，默认模式为 `AUTO`。`COMMON` 跳过知识检索，`RAG` 跳过意图识别。重试创建时复用同一个请求 ID 和原始请求体。
+2. `GET /chat/runs/{runId}/events` 打开单次 SSE。按顺序接收 `meta`、`progress`、`warning`、`references`、`delta` 和终态。每个业务事件包含 `protocolVersion`、`runId`、`sequence`、`type`、`timestamp` 和 `payload`。心跳是 SSE 注释，序号仅用于诊断。
+3. `POST /chat/runs/{runId}/cancel` 停止待启动或正在运行的轮次。`GET /chat/runs/{runId}` 可查询状态、已保存文本、引用和结束原因。取消或断线都会停止上游，已收到的文本和引用由独立通道收尾。只有 MySQL 提交并确认后，SSE 才发 `end` 和 `persisted: true`。
+
+同一会话同一时间只能有一个活动轮次，重复打开流返回 409。并发满时打开流返回 429，轮次仍可在 READY 有效期内尝试打开。连接中断后通过状态接口和会话历史查看结果。旧 `POST /chat/send` 已弃用，仍通过同一个轮次服务映射旧前缀，成功落库后才发 `[DONE]`。
+
+检索共用一次生效版本快照。关键词和向量各取最多 10 条，按 `1/(60+rank)` 融合，重排可用时对融合候选重新打分，再选最多 5 项资料。引用保留子块原文、各路分数和实际注入的父块映射。评测通过同一套业务结果读取资料和回答，指标使用实际注入模型的文本。
+
+默认在线并发 8，离线评测并发 2，待启动轮次最多 32。准备 6 秒、首字 12 秒、文本空闲 10 秒、整轮 45 秒、独立收尾 3 秒，READY 等待 60 秒，心跳间隔 10 秒。参数由 `know-engine.chat` 配置。每个阶段还受对应执行池的排队和依赖上限约束。`know-engine.chat.stage-timeouts` 可按 DB、INTENT、TITLE、REWRITE、EMBEDDING、SEARCH、RERANK、GENERATION 调整。
+
+提示词预算为 32 KiB UTF-8 估算，含 8 KiB 输出预留和 2 KiB 安全余量。问题上限 4 KiB，保留最近完整问答对并按预算选资料。向量检索的 ES 分数阈值默认 0.5。重排阈值默认关闭，启用时通过 `rerank-threshold-model` 绑定经过评测的模型。SSE 写出池独立，默认每轮最多缓冲 256 个事件和 1 MiB 数据。
+
+### 升级聊天表
+
+已有 `know_engine` 库先停本机旧 Java，保留 SSH 转发和服务器中间件。用有 DDL 权限的 MySQL 账号选中目标库，执行 [upgrade-chat-runs.sql](src/main/resources/sql/upgrade-chat-runs.sql)，再启动新版 Java。全新库使用 [schema.sql](src/main/resources/sql/schema.sql)。
+
+迁移增加 `chat_run` 和 `chat_message.run_id`。执行前可用 `SELECT DATABASE()` 确认目标库，执行后检查 `SHOW CREATE TABLE chat_run` 和 `SHOW INDEX FROM chat_message`。旧消息的关联列为 NULL，旧引用 JSON 仍可读。ES 使用现有别名和版本化索引。MySQL DDL 会隐式提交，若中途失败，检查目标库后重跑增量脚本。回滚 Java 时可以保留新表和列，新轮次状态仍由新版接口读取。
 
 ## MinerU 解析服务
 

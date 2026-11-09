@@ -231,8 +231,8 @@ public class LlmJudgeService {
         }
         // 对流式处理引用
         return references.stream()
-                // 取出分片正文
-                .map(ChatMessage.RagReference::getChunkContent)
+                // 评分依据是实际送给生成模型的上下文。父块只出现一次，旧引用继续读原分片正文。
+                .map(ref -> ref.getContextId() == null ? ref.getChunkContent() : ref.getContextContent())
                 // 过滤空内容
                 .filter(content -> content != null && !content.isBlank())
                 // 收集后再二次处理

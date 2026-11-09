@@ -4,6 +4,7 @@ import com.alibaba.druid.pool.DruidDataSource;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
@@ -13,6 +14,8 @@ import reactor.core.publisher.Mono;
 import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.EnumMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
@@ -44,9 +47,16 @@ public class OnlineChatWork {
     private final EnumMap<Stage, Lane> lanes = new EnumMap<>(Stage.class);
     private static final ThreadLocal<Call> CURRENT = new ThreadLocal<>();
     private final DruidDataSource database;
+    private final ChatSettings settings;
     private long loggedDbWaits;
 
     OnlineChatWork(DataSource dataSource) {
+        this(dataSource, new ChatSettings());
+    }
+
+    @Autowired
+    OnlineChatWork(DataSource dataSource, ChatSettings settings) {
+        this.settings = settings;
         database = dataSource instanceof DruidDataSource druid ? druid : null;
         if (database != null) {
             log.info("Druid limits maxActive={} borrowMs={} connectMs={} socketMs={} querySeconds={}",
@@ -59,6 +69,10 @@ public class OnlineChatWork {
     }
 
     <T> Mono<T> run(Stage stage, Duration remaining, Callable<T> action) {
+        return run(stage, () -> remaining, action);
+    }
+
+    <T> Mono<T> run(Stage stage, Supplier<Duration> remaining, Callable<T> action) {
         return this.<T>execute(stage, remaining, null, null, sink -> {
             T result = action.call();
             if (result != null) sink.next(result);
@@ -66,16 +80,19 @@ public class OnlineChatWork {
     }
 
     <T> Flux<T> stream(Duration remaining, Duration firstAnswer, Duration idle, Work<T> action) {
-        return execute(Stage.GENERATION, remaining, firstAnswer, idle, action);
+        return execute(Stage.GENERATION, () -> remaining, firstAnswer, idle, action);
     }
 
-    private <T> Flux<T> execute(Stage stage, Duration remaining, Duration firstAnswer, Duration idle, Work<T> action) {
+    private <T> Flux<T> execute(Stage stage, Supplier<Duration> remaining, Duration firstAnswer, Duration idle, Work<T> action) {
         return Flux.defer(() -> {
             Lane lane = lanes.get(stage);
-            Duration budget = remaining.compareTo(stage.timeout) < 0 ? remaining : stage.timeout;
+            Duration limit = settings.getStageTimeouts().getOrDefault(stage, stage.timeout);
+            Duration left = remaining.get();
+            boolean phaseLimited = left.compareTo(limit) <= 0;
+            Duration budget = phaseLimited ? left : limit;
             if (budget.isZero() || budget.isNegative()) {
                 lane.timeouts.increment();
-                return Flux.error(new Unavailable("操作已超时"));
+                return Flux.error(new StageTimeout(stage, phaseLimited));
             }
             long ticket = lane.circuit.enter();
             if (ticket < 0) {
@@ -84,17 +101,20 @@ public class OnlineChatWork {
             }
             Flux<T> source = Flux.create(sink -> {
                 Call call = new Call(lane);
+                long queuedAt = System.nanoTime();
                 FutureTask<Void> task = new FutureTask<>(() -> {
                     if (!call.start()) return null;
                     CURRENT.set(call);
                     try {
-                        if (!sink.isCancelled()) {
+                        if (System.nanoTime() - queuedAt >= budget.toNanos()) {
+                            sink.error(new StageTimeout(stage, phaseLimited));
+                        } else if (!sink.isCancelled()) {
                             action.run(sink);
                             sink.complete();
                         }
                     } catch (Throwable error) {
                         Exceptions.throwIfFatal(error);
-                        sink.error(error);
+                        if (!sink.isCancelled()) sink.error(error);
                     } finally {
                         CURRENT.remove();
                         call.finish();
@@ -105,7 +125,7 @@ public class OnlineChatWork {
                     try {
                         call.cancel();
                     } finally {
-                        task.cancel(true);
+                        task.cancel(CURRENT.get() != call);
                         lane.executor.remove(task);
                     }
                 });
@@ -122,13 +142,14 @@ public class OnlineChatWork {
             }
             return untilDeadline(source, budget, () -> {
                 lane.timeouts.increment();
-                return new Unavailable("操作已超时");
+                return new StageTimeout(stage, phaseLimited);
             })
             .doOnComplete(() -> lane.circuit.success(ticket))
             .doOnError(error -> {
                 lane.errors.increment();
                 if (error instanceof TimeoutException) lane.timeouts.increment();
-                if (error instanceof Busy) lane.circuit.abandon(ticket);
+                if (error instanceof Busy || error instanceof StageTimeout timeout && timeout.phaseLimited
+                        || error instanceof ChatFailure failure && !failure.dependencyFailure()) lane.circuit.abandon(ticket);
                 else lane.circuit.failure(ticket);
                 log.debug("Online stage {} failed ({})", stage, error.getClass().getSimpleName());
             })
@@ -146,9 +167,18 @@ public class OnlineChatWork {
     }
 
     /** Transport registers cancellation before doing network I/O, including before the first token. */
-    public static void onTransportCancel(Runnable abort) {
+    public static Registration onTransportCancel(Runnable abort) {
         Call call = CURRENT.get();
-        if (call != null) call.register(abort);
+        return call == null ? () -> {} : call.register(abort);
+    }
+
+    public interface Registration extends AutoCloseable {
+        @Override void close();
+    }
+
+    static Runnable currentTransportAbort() {
+        Call call = CURRENT.get();
+        return call == null ? () -> {} : call::cancel;
     }
 
     void degraded(Stage stage) {
@@ -200,11 +230,19 @@ public class OnlineChatWork {
         Busy() { super("服务繁忙，请稍后再试"); }
     }
 
+    static final class StageTimeout extends Unavailable {
+        final boolean phaseLimited;
+        StageTimeout(Stage stage, boolean phaseLimited) {
+            super(stage.name() + " 操作超时");
+            this.phaseLimited = phaseLimited;
+        }
+    }
+
     private static final class Call {
         private final Lane lane;
         private boolean cancelled;
         private boolean running;
-        private Runnable abort;
+        private final HashSet<Runnable> aborts = new HashSet<>();
 
         Call(Lane lane) {
             this.lane = lane;
@@ -218,21 +256,43 @@ public class OnlineChatWork {
         }
 
         synchronized void finish() {
-            if (cancelled) lane.cancelledRunning.decrement();
+            if (cancelled && running) lane.cancelledRunning.decrement();
             running = false;
+            aborts.clear();
         }
 
-        synchronized void register(Runnable abort) {
-            if (cancelled) abort.run();
-            else this.abort = abort;
+        Registration register(Runnable abort) {
+            synchronized (this) {
+                if (!cancelled) {
+                    aborts.add(abort);
+                    return () -> unregister(abort);
+                }
+            }
+            abortSafely(abort);
+            return () -> {};
         }
 
-        synchronized void cancel() {
-            if (cancelled) return;
-            cancelled = true;
-            if (running) {
-                lane.cancelledRunning.increment();
-                if (abort != null) abort.run();
+        private synchronized void unregister(Runnable abort) {
+            aborts.remove(abort);
+        }
+
+        void cancel() {
+            List<Runnable> snapshot;
+            synchronized (this) {
+                if (cancelled) return;
+                cancelled = true;
+                if (running) lane.cancelledRunning.increment();
+                snapshot = List.copyOf(aborts);
+                aborts.clear();
+            }
+            snapshot.forEach(Call::abortSafely);
+        }
+
+        private static void abortSafely(Runnable abort) {
+            try {
+                abort.run();
+            } catch (RuntimeException error) {
+                log.warn("Transport cancellation failed ({})", error.getClass().getSimpleName());
             }
         }
     }

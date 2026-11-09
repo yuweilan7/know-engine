@@ -2,8 +2,7 @@ package know.engine.chat.constant;
 
 /**
  * RAG 检索来源类型，标记引用片段是通过哪种检索策略命中的
- * 写入 {@link know.engine.chat.entity.ChatMessage.RagReference#retrievalSource}，
- * 由 {@link know.engine.rag.util.RetrievalSourceUtil} 在 RAG 管道中自动解析
+ * 写入 {@link know.engine.chat.entity.ChatMessage.RagReference#retrievalSource}
  */
 public enum RetrievalSource {
 
@@ -16,6 +15,6 @@ public enum RetrievalSource {
     /** 向量与全文双路均命中，经 RRF 融合 */
     HYBRID,
 
-    /** 无法追溯检索来源、仅经 Rerank 处理的片段（如测试接口） */
+    /** 历史引用 JSON 兼容值。新轮次保留原始检索来源。 */
     RERANK
 }

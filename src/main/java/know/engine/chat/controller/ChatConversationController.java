@@ -2,7 +2,7 @@ package know.engine.chat.controller;
 
 import know.engine.chat.entity.ChatConversation;
 import know.engine.chat.service.ChatConversationService;
-import know.engine.chat.service.ChatMessageService;
+import know.engine.chat.service.ChatRunService;
 import know.engine.common.DefaultUser;
 import know.engine.common.Result;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,7 +21,7 @@ public class ChatConversationController {
     private ChatConversationService chatConversationService;
 
     @Autowired
-    private ChatMessageService chatMessageService;
+    private ChatRunService runs;
 
     /**
      * 获取指定用户的会话列表
@@ -42,9 +42,8 @@ public class ChatConversationController {
      * @return 操作结果
      */
     @DeleteMapping("/delete")
-    public Result<Void> deleteConversation(@RequestParam String conversationId) {
-        chatMessageService.deleteMessagesByConversationId(conversationId);
-        boolean success = chatConversationService.deleteConversation(conversationId);
-        return Result.result(success, success ? "会话已删除" : "删除失败");
+    public Result<Void> deleteConversation(@RequestParam String conversationId, @RequestParam(required = false) String userId) {
+        runs.deleteConversation(conversationId, userId);
+        return Result.result(true, "会话已删除");
     }
 }

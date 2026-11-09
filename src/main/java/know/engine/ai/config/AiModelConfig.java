@@ -11,6 +11,11 @@ import org.springframework.context.annotation.Configuration;
 import java.time.Duration;
 import java.util.Map;
 
+/**
+ * 显式配置聊天主链使用的 LangChain4j 低层模型。Bean 名和调用方的 Qualifier 对应。
+ * 意图识别、改写和标题使用同步模型，生成使用流式模型。百炼地址、模型名和密钥由外部配置提供。
+ * 这些 Bean 共用可取消的 HTTP 传输，调用方负责路由、上下文、超时和结果持久化。
+ */
 @Configuration
 public class AiModelConfig {
     @Bean
@@ -49,6 +54,7 @@ public class AiModelConfig {
                                     @Value("${langchain4j.open-ai.chat-model.api-key}") String apiKey,
                                     @Value("${langchain4j.open-ai.chat-model.base-url}") String baseUrl,
                                     @Value("${langchain4j.open-ai.streaming-chat-model.model-name}") String modelName) {
+        // 知识问答使用低温度，并通过 ChatService 注入检索上下文。
         return streamBuilder(transport, apiKey, baseUrl, modelName)
                 .temperature(0.2).topP(0.9)
                 .build();

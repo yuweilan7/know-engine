@@ -536,3 +536,16 @@
         max-width: 88%;
     }
 }
+.run-status {
+    color: #64748b;
+    font-size: 0.82rem;
+    margin-top: 0.5rem;
+}
+
+#stopBtn {
+    white-space: nowrap;
+}
+
+#stopBtn[hidden] {
+    display: none;
+}

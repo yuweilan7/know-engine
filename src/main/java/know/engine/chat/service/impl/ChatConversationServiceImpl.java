@@ -27,7 +27,7 @@ public class ChatConversationServiceImpl extends ServiceImpl<ChatConversationMap
 
     @Override
     public String createConversation(String userId, String title) {
-        String conversationId = UUID.randomUUID().toString().replace("-", "") + userId;
+        String conversationId = UUID.randomUUID().toString().replace("-", "");
 
         ChatConversation conversation = new ChatConversation();
         conversation.setConversationId(conversationId);
@@ -36,7 +36,7 @@ public class ChatConversationServiceImpl extends ServiceImpl<ChatConversationMap
         conversation.setCreatedAt(LocalDateTime.now());
         conversation.setUpdatedAt(LocalDateTime.now());
 
-        this.save(conversation);
+        if (!this.save(conversation)) throw new IllegalStateException("Could not insert chat conversation");
         return conversationId;
     }
 

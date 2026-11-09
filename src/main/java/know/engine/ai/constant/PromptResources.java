@@ -28,7 +28,7 @@ public final class PromptResources {
     /** 会话标题生成用户提示词，携带用户首条问题作为输入 */
     public static final String TITLE_SUMMARY_USER = PROMPT_ROOT + "title-summary-user-prompt.txt";
 
-    /** 通用闲聊系统提示词，用于 {@link know.engine.ai.service.CommonChatService} */
+    /** 通用闲聊系统提示词。 */
     public static final String COMMON_CHAT_SYSTEM = PROMPT_ROOT + "common-chat-system-prompt.txt";
 
     /** RAG 内容注入提示词，将检索到的知识片段拼入 LLM 上下文 */

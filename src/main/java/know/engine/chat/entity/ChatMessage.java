@@ -36,6 +36,8 @@ public class ChatMessage extends BaseEntity {
      */
     private String conversationId;
 
+    private String runId;
+
     /**
      * 角色：user/assistant
      */
@@ -109,11 +111,8 @@ public class ChatMessage extends BaseEntity {
         private String chunkContent;
 
         /**
-         * 相似度分数= Elasticsearch 检索阶段对该 chunk 的原始相关度分数
-         * 不同检索模式来源不同：
-         *      向量（KNN）检索：来自 EmbeddingSearchResult 的 m.score(), 即 query embedding 与 chunk embedding 的语义相似度（LangChain4j ES KNN 返回）
-         *      全文检索：来自 ES hit 的 hit.score()（match 相关度，如 BM25）, 即 ES 关键词 match 相关度（非向量余弦相似度）
-         *      混合检索：同样走 mapResultsToContentList，用 ES 返回的 score, 即 ES 混合查询返回的 score
+         * 历史兼容的原始分数字段。新轮次分别记录 keywordScore（BM25）和 vectorScore（ES KNN _score）。
+         * 双路都命中时此字段沿用关键词原始分，融合排名请读 rrfScore。
          */
         private Double similarityScore;
 
@@ -121,6 +120,19 @@ public class ChatMessage extends BaseEntity {
          * 重排序分数（Reranker 模型对 query 与 chunk 的相关性评分，仅经重排阶段时有值）, 最终依据
          */
         private Double rerankScore;
+
+        /** 指向实际注入的上下文项。同一个父块的兄弟命中可以关联到同一个 contextId。 */
+        private String contextId;
+
+        /** 每个上下文项的首条引用保存注入文本，其余引用通过 contextId 关联，避免重复保存整段父块。 */
+        private String contextContent;
+
+        /** 各路贡献按名次累加所得的分数。关键词和向量原分保存在各自字段。 */
+        private Double rrfScore;
+        private Integer keywordRank;
+        private Double keywordScore;
+        private Integer vectorRank;
+        private Double vectorScore;
 
         /**
          * 检索来源：vector/keyword/hybrid/rerank

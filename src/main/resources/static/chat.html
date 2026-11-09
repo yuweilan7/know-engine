@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -52,6 +52,7 @@
                         <div class="input-wrapper">
                             <textarea id="messageInput" placeholder="输入您的问题..." rows="1"></textarea>
                             <button class="btn btn-primary" id="sendBtn">发送</button>
+                            <button class="btn" id="stopBtn" hidden>停止</button>
                         </div>
                     </div>
                 </div>
@@ -59,11 +60,12 @@
         </main>
     </div>
 
+    <script src="/chat-stream.js"></script>
     <script>
         // 状态管理
-        let currentConversationId = null;
-        let isStreaming = false;
-        let eventSource = null;
+        let currentConversationId = new URLSearchParams(location.search).get('conversationId');
+        let activeRequest = null;
+        let loadSequence = 0;
 
         // 配置 marked：开启 GFM、换行符转 <br>、代码高亮
         if (window.marked) {
@@ -107,27 +109,35 @@
         const messagesContainer = document.getElementById('messagesContainer');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
+        const stopBtn = document.getElementById('stopBtn');
         const chatHeader = document.getElementById('chatHeader');
         const chatTitle = document.getElementById('chatTitle');
         const conversationIdDisplay = document.getElementById('conversationIdDisplay');
-        const welcomeMessage = document.getElementById('welcomeMessage');
 
         // 初始化
-        document.addEventListener('DOMContentLoaded', () => {
-            loadConversations();
+        document.addEventListener('DOMContentLoaded', async () => {
             setupEventListeners();
+            const initialConversation = currentConversationId;
+            await loadConversations();
+            if (initialConversation && currentConversationId === initialConversation && !activeRequest) {
+                await loadMessages(initialConversation);
+            }
         });
 
         // 设置事件监听
         function setupEventListeners() {
             // 新对话按钮
             newChatBtn.addEventListener('click', () => {
-                currentConversationId = null;
+                leaveConversation();
+                loadSequence++;
+                setConversationId(null);
                 resetChat();
             });
 
             // 发送按钮
             sendBtn.addEventListener('click', sendMessage);
+            stopBtn.addEventListener('click', stopCurrent);
+            window.addEventListener('pagehide', leaveConversation);
 
             // 回车发送
             messageInput.addEventListener('keydown', (e) => {
@@ -168,7 +178,7 @@
                 <div class="conversation-item ${conv.conversationId === currentConversationId ? 'active' : ''}" 
                      data-id="${conv.conversationId}">
                     <div class="title">${escapeHtml(conv.title || '新对话')}</div>
-                    <div class="time">${formatTime(conv.updateTime || conv.createTime)}</div>
+                    <div class="time">${formatTime(conv.updatedAt || conv.createdAt)}</div>
                     <button class="delete-btn" onclick="deleteConversation(event, '${conv.conversationId}')">删除</button>
                 </div>
             `).join('');
@@ -184,7 +194,9 @@
 
         // 选择会话
         async function selectConversation(conversationId) {
-            currentConversationId = conversationId;
+            if (conversationId === currentConversationId && activeRequest) return;
+            leaveConversation();
+            setConversationId(conversationId);
             
             // 更新UI选中状态
             conversationList.querySelectorAll('.conversation-item').forEach(item => {
@@ -195,12 +207,22 @@
             await loadMessages(conversationId);
         }
 
+        function setConversationId(id) {
+            currentConversationId = id;
+            const url = new URL(location.href);
+            if (id) url.searchParams.set('conversationId', id);
+            else url.searchParams.delete('conversationId');
+            history.replaceState(null, '', url);
+        }
+
         // 加载消息历史
         async function loadMessages(conversationId) {
+            const load = ++loadSequence;
             try {
                 const response = await fetch(`/chat/message/list?conversationId=${encodeURIComponent(conversationId)}`);
                 if (response.ok) {
                     const result = await response.json();
+                    if (load !== loadSequence || currentConversationId !== conversationId) return;
                     renderMessages(result.data || []);
                     
                     // 显示聊天头部
@@ -210,7 +232,7 @@
                     }
                     conversationIdDisplay.textContent = conversationId.substring(0, 8) + '...';
                     chatHeader.style.display = 'flex';
-                    welcomeMessage.style.display = 'none';
+                    messagesContainer.querySelector('.welcome-message')?.remove();
                 }
             } catch (error) {
                 console.error('加载消息失败:', error);
@@ -239,7 +261,8 @@
                         <div class="message-content">
                             <div class="message-text">${bodyHtml}</div>
                             ${refsHtml}
-                            <div class="message-time">${formatTime(msg.createTime)}</div>
+                            ${!isUser && msg.status ? '<div class="run-status">' + escapeHtml(runLabel(msg.status, msg.reasonCode)) + '</div>' : ''}
+                            <div class="message-time">${formatTime(msg.createdAt)}</div>
                         </div>
                     </div>
                 `;
@@ -248,171 +271,210 @@
             scrollToBottom();
         }
 
-        // 发送消息
+
         async function sendMessage() {
             const content = messageInput.value.trim();
-            if (!content || isStreaming) return;
-
-            // 显示用户消息
+            if (!content || activeRequest) return;
+            if (new TextEncoder().encode(content).length > 4096) {
+                alert('问题超过 4096 字节，请缩短后再发送');
+                return;
+            }
+            loadSequence++;
             appendMessage('user', content);
             messageInput.value = '';
             messageInput.style.height = 'auto';
-
-            // 隐藏欢迎消息
-            welcomeMessage.style.display = 'none';
+            messagesContainer.querySelector('.welcome-message')?.remove();
             chatHeader.style.display = 'flex';
-
-            // 显示AI正在输入
-            const aiMessageElement = appendMessage('assistant', '', true);
-            aiMessageElement.progressSteps = [];
-            isStreaming = true;
-            sendBtn.disabled = true;
-
+            const request = {
+                command: {clientRequestId: crypto.randomUUID(), conversationId: currentConversationId, content},
+                element: appendMessage('assistant', '', true),
+                controller: new AbortController(),
+                answer: '', sequence: 0, stopped: false, terminal: false
+            };
+            activeRequest = request;
+            setStreaming(true);
             try {
-                // 构建URL
-                const params = new URLSearchParams();
-                params.append('content', content);
-                if (currentConversationId) {
-                    params.append('conversationId', currentConversationId);
+                const options = {method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(request.command), signal: AbortSignal.timeout(8000)};
+                let created;
+                try {
+                    created = await fetch('/chat/runs', options);
+                } catch (error) {
+                    created = await fetch('/chat/runs', {...options, signal: AbortSignal.timeout(8000)});
                 }
-
-                // 使用fetch发送请求
-                const response = await fetch(`/chat/send?${params.toString()}`, {
-                    method: 'POST'
+                requireOk(created);
+                request.run = await created.json();
+                if (activeRequest === request) {
+                    setConversationId(request.run.conversationId);
+                    conversationIdDisplay.textContent = currentConversationId.slice(0, 8) + '...';
+                    loadConversations();
+                }
+                if (request.stopped) {
+                    await cancelRequest(request);
+                    return;
+                }
+                const response = await fetch(runUrl(request, '/events'), {
+                    headers: {'Accept': 'text/event-stream'}, signal: request.controller.signal
                 });
-
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                if (response.status === 429) {
+                    await cancelRequest(request, '当前回答并发已满，请稍后重发');
+                    return;
                 }
-
-                // 处理SSE流式响应
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                let fullContent = '';
-                let hasSpecialContent = false; // 标记是否已渲染 WARN/CARD 等特殊内容
-
-                // 处理单个 SSE 事件（事件内可能包含多条 data: 行，需用 \n 拼接以保留 Markdown 换行）
-                const processEvent = (eventBlock) => {
-                    if (!eventBlock) return;
-                    const lines = eventBlock.split(/\r?\n/);
-                    const dataLines = [];
-                    let nonDataFallback = '';
-                    for (const ln of lines) {
-                        if (ln.startsWith('data:')) {
-                            // SSE 规范：data: 后允许有一个可选空格，但不应 trim 内容（保留缩进/列表前缀）
-                            let v = ln.substring(5);
-                            if (v.startsWith(' ')) v = v.substring(1);
-                            dataLines.push(v);
-                        } else if (ln.trim() && !ln.startsWith(':')) {
-                            // 兼容直接返回的非 SSE 文本（如裸 [DONE]:conversationId）
-                            nonDataFallback = ln.trim();
-                        }
-                    }
-
-                    if (dataLines.length === 0) {
-                        // 处理非 SSE 兜底：识别 [DONE]:conversationId
-                        if (nonDataFallback.startsWith('[DONE]:')) {
-                            const conversationId = nonDataFallback.substring(7).trim();
-                            if (conversationId) {
-                                currentConversationId = conversationId;
-                                conversationIdDisplay.textContent = conversationId.substring(0, 8) + '...';
-                                loadConversations();
-                            }
-                        }
-                        return;
-                    }
-
-                    // 关键：多条 data: 行用 \n 拼接，保留 Markdown 中的换行
-                    const data = dataLines.join('\n');
-
-                    // [DONE]:conversationId
-                    if (data.startsWith('[DONE]:')) {
-                        const conversationId = data.substring(7).trim();
-                        if (conversationId) {
-                            currentConversationId = conversationId;
-                            conversationIdDisplay.textContent = conversationId.substring(0, 8) + '...';
-                            loadConversations();
-                        }
-                        return;
-                    }
-                    if (data === '[DONE]') return;
-                    // 进度通知
-                    if (data.startsWith('[PROGRESS]:')) {
-                        updateProgressStatus(aiMessageElement, data.substring(11).trim());
-                        return;
-                    }
-                    // 引用资料
-                    if (data.startsWith('[REFERENCE]:')) {
-                        try {
-                            const refs = JSON.parse(data.substring(12).trim());
-                            aiMessageElement.references = refs;
-                            renderReferences(aiMessageElement, refs);
-                        } catch (e) {
-                            console.error('解析引用数据失败:', e);
-                        }
-                        return;
-                    }
-                    // 警告
-                    if (data.startsWith('[WARN]:')) {
-                        renderWarnMessage(aiMessageElement, data.substring(7).trim());
-                        hasSpecialContent = true;
-                        return;
-                    }
-                    // 卡片提示
-                    if (data.startsWith('[CARD]:')) {
-                        renderCardPrompt(aiMessageElement, data.substring(7).trim());
-                        hasSpecialContent = true;
-                        return;
-                    }
-
-                    // 普通内容：累积并渲染（收到首个内容时把最后一个进度标记为完成）
-                    if (fullContent === '') {
-                        markAllProgressDone(aiMessageElement);
-                    }
-                    fullContent += data;
-                    updateMessageContent(aiMessageElement, fullContent);
-                };
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-
-                    // SSE 事件以空行（\n\n 或 \r\n\r\n）为分隔
-                    const eventSep = /\r?\n\r?\n/g;
-                    let m;
-                    let lastIndex = 0;
-                    while ((m = eventSep.exec(buffer)) !== null) {
-                        const eventBlock = buffer.substring(lastIndex, m.index);
-                        lastIndex = m.index + m[0].length;
-                        processEvent(eventBlock);
-                    }
-                    buffer = buffer.substring(lastIndex);
-                }
-
-                // 收尾：缓冲区里若仍有未以空行结束的事件，作为最后一个事件处理
-                if (buffer.trim()) {
-                    processEvent(buffer);
-                    buffer = '';
-                }
-
-                // 如果没有收到流式内容，也没有渲染过特殊内容（WARN/CARD），显示提示
-                if (!fullContent && !hasSpecialContent) {
-                    updateMessageContent(aiMessageElement, '对话已创建，请继续输入您的问题。');
-                }
-
+                requireOk(response);
+                await readChatEvents(response.body, event => receiveEvent(request, event));
+                if (!request.terminal && !request.stopped) await reconcile(request, '回答连接已断开');
             } catch (error) {
-                console.error('发送消息失败:', error);
-                updateMessageContent(aiMessageElement, '发送失败: ' + error.message);
+                if (request.stopped) {
+                    if (request.cancelPromise) await request.cancelPromise;
+                    else if (!request.run) setRunLabel(request, '未确认轮次创建，未打开回答流');
+                } else if (request.run) {
+                    await reconcile(request, '回答连接失败');
+                } else {
+                    setRunLabel(request, '发送失败：' + error.message);
+                }
             } finally {
-                isStreaming = false;
-                sendBtn.disabled = false;
-                removeTypingIndicator(aiMessageElement);
-                markAllProgressDone(aiMessageElement);
-                scrollToBottom();
+                if (activeRequest === request) {
+                    activeRequest = null;
+                    setStreaming(false);
+                    removeTypingIndicator(request.element);
+                    request.element.querySelector('.progress-spinner')?.remove();
+                    loadConversations();
+                }
             }
+        }
+
+        function receiveEvent(request, event) {
+            if (activeRequest !== request || request.stopped || request.terminal
+                    || event.runId !== request.run.runId || event.sequence <= request.sequence) return;
+            request.sequence = event.sequence;
+            const payload = event.payload;
+            switch (event.type) {
+                case 'progress':
+                case 'warning':
+                    updateProgressStatus(request.element, payload.message);
+                    break;
+                case 'references':
+                    renderReferences(request.element, payload.references);
+                    break;
+                case 'delta':
+                    if (!request.answer) markAllProgressDone(request.element);
+                    request.answer += payload.text;
+                    updateMessageContent(request.element, request.answer);
+                    break;
+                case 'end':
+                    request.terminal = payload.persisted;
+                    setRunLabel(request, runLabel(payload.status, payload.reasonCode));
+                    break;
+                case 'error':
+                    setRunLabel(request, '终态保存尚未确认，正在查询');
+                    break;
+            }
+        }
+
+        function setStreaming(streaming) {
+            sendBtn.disabled = streaming;
+            stopBtn.hidden = !streaming;
+            stopBtn.disabled = false;
+        }
+
+        function stopCurrent() {
+            const request = activeRequest;
+            if (!request || request.terminal) return;
+            request.stopped = true;
+            stopBtn.disabled = true;
+            setRunLabel(request, '正在停止…');
+            if (request.run) cancelRequest(request);
+        }
+
+        function leaveConversation() {
+            const request = activeRequest;
+            if (!request) return;
+            stopCurrent();
+            activeRequest = null;
+            setStreaming(false);
+        }
+
+        function runUrl(request, suffix = '') {
+            return '/chat/runs/' + encodeURIComponent(request.run.runId) + suffix;
+        }
+
+        function cancelRequest(request, label) {
+            if (!request.cancelPromise) request.cancelPromise = (async () => {
+                let fallback = '已停止接收，后台状态待确认';
+                try {
+                    const response = await fetch(runUrl(request, '/cancel'), {
+                        method: 'POST', keepalive: true, signal: AbortSignal.timeout(5000)
+                    });
+                    requireOk(response);
+                    const state = await response.json();
+                    if (state.accepted) fallback = '已请求停止，正在保存';
+                } catch (error) {
+                    console.debug('停止请求状态待确认', error);
+                } finally {
+                    request.controller.abort();
+                }
+                await reconcile(request, fallback, label);
+            })();
+            return request.cancelPromise;
+        }
+
+        async function reconcile(request, fallback, label) {
+            for (let attempt = 0; attempt < 6 && activeRequest === request; attempt++) {
+                try {
+                    const response = await fetch(runUrl(request), {signal: AbortSignal.timeout(1800)});
+                    requireOk(response);
+                    const state = await response.json();
+                    if (activeRequest !== request) return;
+                    if (typeof state.answer === 'string' && state.answer.length >= request.answer.length) {
+                        request.answer = state.answer;
+                        updateMessageContent(request.element, request.answer);
+                    }
+                    if (state.references) renderReferences(request.element, state.references);
+                    const status = state.run.status;
+                    if (['COMPLETED', 'CANCELLED', 'FAILED', 'TIMED_OUT'].includes(status)) {
+                        request.terminal = true;
+                        setRunLabel(request, label || runLabel(status, state.reasonCode));
+                        return;
+                    }
+                } catch (error) {
+                    console.debug('轮次状态暂不可查', error);
+                }
+                setRunLabel(request, label || fallback);
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+
+        function requireOk(response) {
+            if (response.ok) return;
+            const labels = {400: '请求内容无效', 404: '会话不存在', 409: '会话有活动轮次或轮次已开始',
+                410: '会话已删除', 429: '服务繁忙，请稍后重试'};
+            throw new Error(labels[response.status] || ('HTTP ' + response.status));
+        }
+
+        function setRunLabel(request, text) {
+            if (activeRequest !== request) return;
+            const content = request.element.querySelector('.message-content');
+            let label = content.querySelector('.run-status');
+            if (!label) {
+                label = document.createElement('div');
+                label.className = 'run-status';
+                label.setAttribute('role', 'status');
+                content.append(label);
+            }
+            label.textContent = text;
+        }
+
+        function runLabel(status, reason) {
+            const labels = {READY: '等待开始', RUNNING: '生成中', FINALIZING: '正在保存', CANCELLED: '已停止',
+                TIMED_OUT: '回答超时', FAILED: '回答失败'};
+            const details = {NOT_STARTED: '未打开回答流', RETRIEVAL_UNAVAILABLE: '知识检索不可用',
+                UPSTREAM_PROTOCOL: '模型流中断', UPSTREAM_INTERRUPTED: '模型连接中断',
+                OUTPUT_LIMIT: '达到输出限制', CONTENT_FILTER: '模型未返回可显示的回答',
+                FIRST_ANSWER_TIMEOUT: '等待首字超时', STREAM_IDLE_TIMEOUT: '输出中断超时',
+                PERSISTENCE_UNAVAILABLE: '保存失败', RECOVERY_INCOMPLETE: '进程中断，已保留最近保存内容',
+                SLOW_CONSUMER: '接收速度过慢', EMPTY_ANSWER: '模型返回空回答'};
+            if (status === 'COMPLETED') return reason === 'NO_EVIDENCE' ? '已完成 · 资料不足' : '已完成';
+            return (labels[status] || '') + (details[reason] ? ' · ' + details[reason] : '');
         }
 
         // 添加消息到聊天区域
@@ -461,7 +523,7 @@
             const uniqueRefs = [];
             const seen = new Set();
             for (const ref of references) {
-                const key = (ref.documentTitle || '') + '|' + (ref.url || '');
+                const key = JSON.stringify([ref.documentId || ref.documentTitle, ref.versionId || ref.url]);
                 if (!seen.has(key)) {
                     seen.add(key);
                     uniqueRefs.push(ref);
@@ -469,10 +531,10 @@
             }
             return `
                 <div class="message-references">
-                    <div class="references-label">参考来源：</div>
+                    <div class="references-label">提供给模型的参考来源</div>
                     <div class="references-list">
                         ${uniqueRefs.map((ref, idx) => `
-                            <a href="${ref.url || '#'}" target="_blank" class="reference-item" title="${escapeHtml(ref.documentTitle || '')}">
+                            <a href="${escapeHtml(referenceUrl(ref.url))}" target="_blank" rel="noopener noreferrer" class="reference-item" title="${escapeHtml(ref.documentTitle || '')}">
                                 <span class="reference-index">[${idx + 1}]</span>
                                 <span class="reference-title">${escapeHtml(ref.documentTitle || '未知文档')}</span>
                             </a>
@@ -567,44 +629,14 @@
             }
         }
 
-        // 移除进度状态（兼容性保留，当前主流程已不再调用）
-        function removeProgressStatus(messageElement) {
-            const progressEl = messageElement.querySelector('.progress-list');
-            if (progressEl) {
-                progressEl.remove();
+        function referenceUrl(value) {
+            try {
+                const url = new URL(value || '#', location.origin);
+                return ['http:', 'https:'].includes(url.protocol) ? url.href : '#';
+            } catch {
+                return '#';
             }
         }
-
-        // 渲染警告消息
-        function renderWarnMessage(messageElement, warnText) {
-            removeTypingIndicator(messageElement);
-            const contentEl = messageElement.querySelector('.message-content');
-            if (!contentEl) return;
-            const textEl = contentEl.querySelector('.message-text');
-            if (textEl) {
-                textEl.innerHTML = `<div class="warn-message"><span class="warn-icon">!</span><span>${escapeHtml(warnText)}</span></div>`;
-            }
-            scrollToBottom();
-        }
-
-        // 渲染卡片提示文字
-        function renderCardPrompt(messageElement, promptText) {
-            removeTypingIndicator(messageElement);
-            const contentEl = messageElement.querySelector('.message-content');
-            if (!contentEl) return;
-            const textEl = contentEl.querySelector('.message-text');
-            if (textEl) {
-                textEl.innerHTML = `<div class="card-prompt">${escapeHtml(promptText)}</div>`;
-            }
-            scrollToBottom();
-        }
-
-        // HTML 属性转义（用于 onclick 等属性中的字符串值）
-        function escapeAttr(text) {
-            if (!text) return '';
-            return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-        }
-
         // 重置聊天区域
         function resetChat() {
             messagesContainer.innerHTML = `
@@ -629,6 +661,7 @@
                     method: 'DELETE'
                 });
 
+                requireOk(response);
                 if (response.ok) {
                     const result = await response.json();
                     if (!result.success) {
@@ -637,7 +670,7 @@
                     }
                     loadConversations();
                     if (currentConversationId === conversationId) {
-                        currentConversationId = null;
+                        setConversationId(null);
                         resetChat();
                     }
                 }
@@ -650,16 +683,6 @@
         // 滚动到底部
         function scrollToBottom() {
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-
-        // 验证UUID格式
-        function isValidUUID(str) {
-            if (!str || typeof str !== 'string') return false;
-            // UUID格式：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-            const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-            // 也支持32字符的无连字符UUID
-            const uuidPatternNoDash = /^[a-f0-9]{32}$/i;
-            return uuidPattern.test(str) || uuidPatternNoDash.test(str);
         }
 
         // 格式化时间

@@ -40,6 +40,12 @@ public class DashScopeScoringModel implements ScoringModel {
                 .build();
     }
 
+    public String modelName() { return model; }
+
+    public static final class ProtocolException extends IllegalStateException {
+        ProtocolException(String message) { super(message); }
+    }
+
     @Override
     public Response<List<Double>> scoreAll(List<TextSegment> segments, String query) {
         if (segments.isEmpty()) {
@@ -62,7 +68,7 @@ public class DashScopeScoringModel implements ScoringModel {
         // API 按相关性返回结果。ScoringModel 要求分数与原始候选一一对齐。
         var results = response == null ? null : response.path("output").path("results");
         if (results == null || !results.isArray() || results.size() != segments.size()) {
-            throw new IllegalStateException("DashScope rerank returned an incomplete result set");
+            throw new ProtocolException("DashScope rerank returned an incomplete result set");
         }
         var scores = new Double[segments.size()];
         for (var result : results) {
@@ -72,7 +78,7 @@ public class DashScopeScoringModel implements ScoringModel {
             double score = scoreNode.doubleValue();
             if (!indexNode.isIntegralNumber() || !indexNode.canConvertToInt() || index < 0 || index >= scores.length
                     || scores[index] != null || !scoreNode.isNumber() || !Double.isFinite(score)) {
-                throw new IllegalStateException("DashScope rerank returned an invalid candidate index or score");
+                throw new ProtocolException("DashScope rerank returned an invalid candidate index or score");
             }
             scores[index] = score;
         }

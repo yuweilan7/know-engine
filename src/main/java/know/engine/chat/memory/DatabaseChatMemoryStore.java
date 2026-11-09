@@ -1,150 +1,43 @@
 package know.engine.chat.memory;
 
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.UserMessage;
 import know.engine.chat.constant.ChatMessageType;
 import know.engine.chat.entity.ChatMessage;
 import know.engine.chat.service.ChatMessageService;
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.ChatMessageDeserializer;
-import dev.langchain4j.data.message.ChatMessageSerializer;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.Objects;
 
 /**
- * 基于数据库 + Redis 的 ChatMemoryStore 实现
- * 使用 Redis 缓存 + 数据库持久化的组合策略，只保留最近 10 条消息：
- * - getMessages(): 优先从 Redis 读取；缓存未命中时从数据库加载历史消息并写入 Redis
- * - updateMessages(): 更新 Redis 缓存（保证同一次 AiServices 调用内多次 add()/messages() 状态一致）
- * - 消息的最终持久化: 在流式对话完成时处理（saveMessage/updateContent）
- * Redis Key 格式: know-engine:chat-memory:{conversationId}   TTL: 1 小时（自动过期，避免冷数据长期占用内存）
+ * 每轮从 MySQL 一次性读取最近五个完整问答对。意图识别、改写和生成共用这份不可变快照。
+ * 未完成的助手内容保存在消息表供回看。模型历史只接收已完成的问答。
  */
-@Slf4j
 @Component
 @RequiredArgsConstructor
-public class DatabaseChatMemoryStore implements ChatMemoryStore {
+public class DatabaseChatMemoryStore {
+    private final ChatMessageService messages;
 
-    private final ChatMessageService chatMessageService;
-
-    private final StringRedisTemplate stringRedisTemplate;
-
-    private static final String REDIS_KEY_PREFIX = "know-engine:chat-memory:";
-
-    /**
-     * 最大保留消息条数
-     */
-    private static final int MAX_MESSAGES = 10;
-
-    /**
-     * Redis 缓存过期时间（小时）
-     */
-    private static final long CACHE_TTL_HOURS = 1;
-
-    @Override
-    public List<dev.langchain4j.data.message.ChatMessage> getMessages(Object memoryId) {
-        String key = buildKey(memoryId);
-        try {
-            String json = stringRedisTemplate.opsForValue().get(key);
-            if (json != null && !json.isEmpty()) {
-                return new ArrayList<>(ChatMessageDeserializer.messagesFromJson(json));
-            }
-        } catch (Exception e) {
-            log.warn("Redis 读取聊天记忆失败, memoryId={}, 将从数据库加载", memoryId, e);
-        }
-
-        // Redis 未命中，从数据库加载
-        List<dev.langchain4j.data.message.ChatMessage> messages =
-                toModelHistory(chatMessageService.getRecentMessages(memoryId.toString(), MAX_MESSAGES));
-        // 写入 Redis
-        saveToRedis(key, messages);
-        return messages;
-    }
-
-    @Override
-    public void updateMessages(Object memoryId, List<dev.langchain4j.data.message.ChatMessage> messages) {
-        // 只保留最近 MAX_MESSAGES 条消息
-        List<dev.langchain4j.data.message.ChatMessage> trimmed = trimMessages(messages);
-        saveToRedis(buildKey(memoryId), trimmed);
-    }
-
-    @Override
-    public void deleteMessages(Object memoryId) {
-        try {
-            stringRedisTemplate.delete(buildKey(memoryId));
-        } catch (Exception e) {
-            log.warn("Redis 删除聊天记忆失败, memoryId={}", memoryId, e);
-        }
-        chatMessageService.deleteMessagesByConversationId(memoryId.toString());
-    }
-
-    /**
-     * 从数据库加载历史消息
-     * 注意：过滤掉意图识别结果消息（INTENT_RECOGNITION），避免污染对话上下文
-     */
     public List<dev.langchain4j.data.message.ChatMessage> loadHistory(String conversationId, String currentMessageId) {
-        return toModelHistory(chatMessageService.getRecentMessagesBefore(conversationId, currentMessageId, MAX_MESSAGES));
-    }
-
-    private List<dev.langchain4j.data.message.ChatMessage> toModelHistory(List<ChatMessage> dbMessages) {
-        List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
-        for (ChatMessage dbMessage : dbMessages) {
-            if (dbMessage.getContent() == null || dbMessage.getContent().isEmpty()) {
-                continue;
+        // 给旧数据里可能存在的空助手占位和截断边界留出空间。最后只交给模型最多 10 条配对消息。
+        List<ChatMessage> rows = messages.getRecentMessagesBefore(conversationId, currentMessageId, 40);
+        var history = new ArrayList<dev.langchain4j.data.message.ChatMessage>();
+        ChatMessage user = null;
+        for (ChatMessage row : rows) {
+            if (row.getType() == ChatMessageType.USER) {
+                user = row;
+            } else if (row.getType() == ChatMessageType.ASSISTANT) {
+                if (user != null && Objects.equals(user.getRunId(), row.getRunId()) && user.getContent() != null
+                        && !user.getContent().isBlank() && row.getContent() != null && !row.getContent().isBlank()) {
+                    history.add(UserMessage.from(user.getContent()));
+                    history.add(AiMessage.from(row.getContent()));
+                }
+                user = null;
             }
-
-            if (dbMessage.getType() == ChatMessageType.USER) {
-                messages.add(UserMessage.from(dbMessage.getContent()));
-            } else if (dbMessage.getType() == ChatMessageType.ASSISTANT) {
-                messages.add(AiMessage.from(dbMessage.getContent()));
-            }
         }
-        return messages;
-    }
-
-    /**
-     * 清除指定会话的缓存（在新一轮对话开始前调用，确保从DB重新加载最新消息）
-     */
-    public void evictCache(Object memoryId) {
-        try {
-            stringRedisTemplate.delete(buildKey(memoryId));
-        } catch (Exception e) {
-            log.warn("Redis 清除聊天记忆缓存失败, memoryId={}", memoryId, e);
-        }
-    }
-
-    /**
-     * 序列化消息列表并保存到 Redis，设置 TTL
-     */
-    private void saveToRedis(String key, List<dev.langchain4j.data.message.ChatMessage> messages) {
-        try {
-            String json = ChatMessageSerializer.messagesToJson(messages);
-            stringRedisTemplate.opsForValue().set(key, json, CACHE_TTL_HOURS, TimeUnit.HOURS);
-        } catch (Exception e) {
-            log.warn("Redis 保存聊天记忆失败, key={}", key, e);
-        }
-    }
-
-    /**
-     * 截断消息列表，只保留最近 MAX_MESSAGES 条
-     */
-    private List<dev.langchain4j.data.message.ChatMessage> trimMessages(List<dev.langchain4j.data.message.ChatMessage> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return Collections.emptyList();
-        }
-        if (messages.size() <= MAX_MESSAGES) {
-            return new ArrayList<>(messages);
-        }
-        return new ArrayList<>(messages.subList(messages.size() - MAX_MESSAGES, messages.size()));
-    }
-
-    private String buildKey(Object memoryId) {
-        return REDIS_KEY_PREFIX + memoryId;
+        return List.copyOf(history.subList(Math.max(0, history.size() - 10), history.size()));
     }
 }

@@ -1,7 +1,6 @@
 package know.engine.rag.config;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.elasticsearch.ElasticsearchAsyncClient;
 import co.elastic.clients.elasticsearch._types.mapping.DenseVectorSimilarity;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
@@ -89,8 +88,4 @@ public class ElasticSearchConfiguration {
         return client;
     }
 
-    @Bean(destroyMethod = "")
-    public ElasticsearchAsyncClient onlineSearchClient(ElasticsearchClient knowledgeIndexClient) {
-        return new ElasticsearchAsyncClient(knowledgeIndexClient._transport());
-    }
 }

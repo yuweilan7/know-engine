@@ -5,6 +5,8 @@ import dev.langchain4j.http.client.HttpClient;
 import dev.langchain4j.http.client.HttpClientBuilder;
 import dev.langchain4j.http.client.HttpRequest;
 import dev.langchain4j.http.client.SuccessfulHttpResponse;
+import dev.langchain4j.http.client.sse.ServerSentEvent;
+import dev.langchain4j.http.client.sse.ServerSentEventContext;
 import dev.langchain4j.http.client.sse.ServerSentEventListener;
 import dev.langchain4j.http.client.sse.ServerSentEventParser;
 import know.engine.chat.service.OnlineChatWork;
@@ -107,8 +109,9 @@ public class OnlineModelHttpClient implements DisposableBean {
                     }
                     listener.onOpen(SuccessfulHttpResponse.builder().statusCode(status)
                             .headers(response.getHeaders()).build());
-                    parser.parse(response.getBody(), listener);
-                    listener.onClose();
+                    var stream = new OpenAiStream(listener);
+                    parser.parse(response.getBody(), stream);
+                    if (!stream.ended) stream.onError(new IncompleteModelStream());
                     return null;
                 });
             } catch (Exception error) {
@@ -122,5 +125,38 @@ public class OnlineModelHttpClient implements DisposableBean {
             if (request.body() != null) spec.body(request.body());
             return spec;
         }
+    }
+
+    /** LangChain4j 1.11 completes on onClose. Only forward it after the wire protocol's [DONE]. */
+    private static final class OpenAiStream implements ServerSentEventListener {
+        private final ServerSentEventListener downstream;
+        private boolean ended;
+
+        private OpenAiStream(ServerSentEventListener downstream) {
+            this.downstream = downstream;
+        }
+
+        @Override
+        public void onEvent(ServerSentEvent event, ServerSentEventContext context) {
+            if (ended) return;
+            if ("[DONE]".equals(event.data())) {
+                ended = true;
+                downstream.onClose();
+                context.parsingHandle().cancel();
+            } else {
+                downstream.onEvent(event, context);
+            }
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            if (ended) return;
+            ended = true;
+            downstream.onError(error);
+        }
+    }
+
+    public static final class IncompleteModelStream extends IOException {
+        public IncompleteModelStream() { super("Missing OpenAI stream terminator"); }
     }
 }
